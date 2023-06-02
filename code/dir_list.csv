@@ -1,0 +1,5 @@
+dir_name,dir_path
+raw,/dx01/kschwarz/project_data/gha_stability/climate_raw/
+proc,/dx01/kschwarz/project_data/gha_stability/climate_proc/
+aux,/dx01/kschwarz/project_data/gha_stability/aux_data/
+figs,/home/kschwarz/projects/gha_stability/figures/
