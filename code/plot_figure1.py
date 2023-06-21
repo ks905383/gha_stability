@@ -8,9 +8,10 @@ import matplotlib as mpl
 from cartopy import crs as ccrs
 import cmocean
 
-from funcs_support import get_params
+from funcs_support import get_params,get_subset_params
 from funcs_load import load_raw
 dir_list = get_params()
+subset_params_all = get_subset_params()
 
 #--------------- Setup ----------------
 output_fn = dir_list['figs']+'figure1'
@@ -24,12 +25,8 @@ line_colors = {'GPCP':'tab:blue','CHIRPS':'tab:orange','GPCC':'tab:purple','TRMM
 
 #--------------- Load and set up data ----------------
 # Load datasets
-dss = {'GPCP':xa.fix_ds(load_raw('pr_Amon*.nc',search_dir = dir_list['raw']+'GPCP/').
-              drop(('time_bnds','lat_bnds','lon_bnds')).rename({'precip':'pr'})),
-       'CHIRPS':xa.fix_ds(load_raw('pr_Amon*.nc',search_dir = dir_list['raw']+'CHIRPS/').
-                 rename({'precip':'pr'})),
-       'GPCC':xa.fix_ds(load_raw('pr_Amon*.nc',search_dir = dir_list['raw']+'GPCC/'))
-      }
+dss = {mod:load_raw('pr_Amon*.nc',dir_list['raw']+mod+'/')
+       for mod in ['GPCP','CHIRPS','GPCC']}
 
 dss = {k:v.sel(lat=slice(-20,20)) for k,v in dss.items()}
 
@@ -101,8 +98,10 @@ ax.grid(axis='x')
 ax.axhline(subset_params['lat'].start,color='k',linestyle=':')
 ax.axhline(subset_params['lat'].stop,color='k',linestyle=':')
 
-ax.plot([32,32],[subset_params['lat'].start,subset_params['lat'].stop],color='tab:red',linestyle='-',transform=ccrs.PlateCarree())
-ax.plot([55,55],[subset_params['lat'].start,subset_params['lat'].stop],color='tab:red',linestyle='-',transform=ccrs.PlateCarree())
+ax.plot([subset_params_all['hoa']['lon'][0]]*2,
+        [subset_params['lat'].start,subset_params['lat'].stop],color='tab:red',linestyle='-',transform=ccrs.PlateCarree())
+ax.plot([subset_params_all['hoa']['lon'][1]]*2,
+        [subset_params['lat'].start,subset_params['lat'].stop],color='tab:red',linestyle='-',transform=ccrs.PlateCarree())
 
 # Set axis ticks
 ax.set_xticks(np.arange(-150,161,50), crs=ccrs.PlateCarree())

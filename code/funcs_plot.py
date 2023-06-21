@@ -23,7 +23,7 @@ import cmocean
 from shapely.geometry import box
 
 from funcs_load import load_raw
-from funcs_support import get_params, area_grid, utility_print
+from funcs_support import get_params, area_grid, utility_print, area_mean, subset_to_srat, earth_radius
 dir_list = get_params()
 
 
@@ -242,15 +242,16 @@ def figure_climatology(plot_data,
     # Annotate axis shading, if it exists
     if axv_shading is not None:
         for shade_name in axv_shading:
-            ax[0].annotate('',
-                    xy=[axv_shading[shade_name][0],ax[0].get_ylim()[0]+np.diff(ax[0].get_ylim())[0]*0.025],
-                    xytext=[axv_shading[shade_name][1],ax[0].get_ylim()[0]+np.diff(ax[0].get_ylim())[0]*0.025],
-                    arrowprops={'arrowstyle':'<->'})
-            ax[0].text(axv_shading[shade_name][0]+
-                        (axv_shading[shade_name][1] - 
-                         axv_shading[shade_name][0])/2,
-                    ax[0].get_ylim()[0]+np.diff(ax[0].get_ylim())[0]*0.05,
-                    shade_name,va='bottom',ha='center')
+            if re.search('[(a-z)|(0-9)]',shade_name):
+                ax[0].annotate('',
+                        xy=[axv_shading[shade_name][0],ax[0].get_ylim()[0]+np.diff(ax[0].get_ylim())[0]*0.025],
+                        xytext=[axv_shading[shade_name][1],ax[0].get_ylim()[0]+np.diff(ax[0].get_ylim())[0]*0.025],
+                        arrowprops={'arrowstyle':'<->'})
+                ax[0].text(axv_shading[shade_name][0]+
+                            (axv_shading[shade_name][1] - 
+                             axv_shading[shade_name][0])/2,
+                        ax[0].get_ylim()[0]+np.diff(ax[0].get_ylim())[0]*0.05,
+                        shade_name,va='bottom',ha='center')
     
     # Legend
     if show_legend:
@@ -279,6 +280,254 @@ def figure_climatology(plot_data,
         return fig,ax[0]
     else:
         return fig,ax
+    
+    
+
+def figure_climatology_panel(plot_vars,
+                             mod = 'MERRA2',
+                             freq = 'day',
+                             suffix = 'HoA',
+                             mod_p = 'CHIRPS',
+                             comp_var = 'ta-nsurf',
+                             ds = None,
+                             stats = None,
+                             stats_suffix = '19810101-20221231_HoA',
+                             labels = None,
+                             KtoC = False,
+                             add_equinox = False,
+                             add_season_shading = True,
+                             save_fig = False,
+                             output_fn = ''):
+    """ Plot a panel of climatology figures for multiple variables
+    
+    Parameters
+    --------------------
+    plot_vars : list
+        Which variables to plot. Note, in addition to standard variables,
+        code supports *-nsurf versions and a few extra, calculated 
+        variables:
+            - 'advT': near-surface T advection, requires `ua-nsurf`, `va-nsurf`
+            - 'nadvT': 'advT' x -1
+            - 'nadvTday': 'nadvT' * 60 * 60 * 24 to convert from K/s to K/day
+            
+    comp_var : str or None, by default 'ta-nsurf'
+        Which variable to plot on every sub-panel. If None, then only
+        `plot_vars` are plotted, one per sub-panel
+            
+    ds : xr.Dataset, by default None
+        If a dataset, then those data are used to plot. If None, then 
+        data is loaded, searched for by: 
+            
+      mod : str, by default 'MERRA2'
+
+      freq : str, by default 'day'
+      
+      suffix : str, by default 'HoA'
+      
+    add_season_shading: bool, by default True
+        If True, then seasons are shaded in the final panel, using seasonal 
+        stats from: 
+      
+      stats : xr.Dataset, by default None  
+        If a dataset, then those seasonal stats are used to plot. If None, 
+        then data is loaded, searched for by: 
+        
+        mod_p : str, by default 'CHIRPS'
+        
+        stats_suffix : str, by default '19810101-20221231_HoA'
+        
+    labels : dict, by default None
+        Use for custom axis labels (of the form: {var : label})
+        
+    KtoC : bool, by default False
+        If True, then variables that start with 'ta' are converted from
+        K to C by subtracting 273.15; labels are changed from C to K as 
+        well
+        
+    add_equinox : bool, by default False
+        If True, then vertical lines are inputted at the equinoxes
+        
+    save_fig : bool, by default False
+    
+    output_fn : str, by default None 
+    
+    """
+
+    if labels is None:
+        labels = {'rsdt':r'TOA down shortwave [W/m$^2$]',
+                  'rsns':r'Surface net shortwave [W/m$^2$]',
+                  'rlus':r'Surface up longwave [W/m$^2$]',
+                  'rlns':r'Surface net longwave [W/m$^2$]',
+                  'rlds':r'Surface down longwave [W/m$^2$]',
+                  'ts':r'Skin temperature [$^\circ$C]',
+                  'cllow':'Low cloud fraction',
+                  'clmid':'Mid cloud fraction',
+                  'clhgh':'High cloud fraction',
+                  'cl':'Total cloud area fraction',
+                  'advT':r'$\mathbf{u}\cdot\nabla T$ [K/s]',
+                  'nadvT':r'$-(\mathbf{u}\cdot\nabla T)$ [K/s]',
+                  'nadvTday':r'$-(\mathbf{u}\cdot\nabla T)$ [K/day]',
+                  'hfls':r'Surface latent flux [W/m$^2$]',
+                  'hfss':r'Surface sensible flux [W/m$^2$]',
+                  'ta-nsurf':r'$T_s$ [K]',
+                  'pr':r'$P$ [mm/day]',
+                  'hdiff':r'$h_s-h^*$ [kJ/kg]',
+                  'hsat':r'$h^*$ [kJ/kg]',
+                  'h':r'$h$ [kJ/kg]'}
+
+    #------------- Load data -------------
+    # Load variables to plot
+    if ds is None:
+        # Determine which variables need to be loaded (tas for advection variables)
+        load_vars = [['ta-nsurf','ua-nsurf','va-nsurf'] if re.search('advT',v) else [v] for v in plot_vars]
+        # Flatten
+        load_vars = [l0 for l1 in load_vars for l0 in l1]
+        # Add variable to plot in every subplot
+        if comp_var is not None:
+            load_vars = [comp_var,*load_vars]
+
+
+        # Determine which directories the variables are in 
+        load_dirs = [('raw' if len(glob.glob(dir_list['raw']+mod+'/'+v+'_'+freq+'_*'+suffix+'.nc'))>0 else 'proc')
+                     for v in load_vars]
+
+        # Get unique load variables, to not double-load anything
+        unique_idxs = np.unique(load_vars,return_index=True)    
+        load_dirs = list(np.array(load_dirs)[unique_idxs[1]])
+        load_vars = list(unique_idxs[0])
+
+        # Load 
+        ds = xr.merge([load_raw(v+'_'+freq+'_*'+suffix+'.nc',
+                                search_dir = dir_list[d]+mod+'/') for v,d in zip(load_vars,load_dirs)])
+
+    # Load seasonal stats
+    if (add_season_shading) and (stats is None):
+        if stats_suffix is None:
+            stats_fn = glob.glob(dir_list['proc']+mod_p+'/pr_doyavg_'+mod_p+'_*_seasstats_*.nc')
+            if len(stats_fn) > 1:
+                raise NotUniqueFile('More than one possible stats file found to load:'+'\n'.join(stats_fn)+'\nTo specify a stats file, use the `stats_suffix` parameter.')
+            else:
+                stats_fn = stats_fn[0]
+        else:
+            stats_fn = dir_list['proc']+mod_p+'/pr_doyavg_'+mod_p+'_historical_seasstats_dunning_'+stats_suffix+'.nc'
+        stats = xr.open_dataset(stats_fn)
+        # NaN out areas outside double-peaked region
+        stats = subset_to_srat(stats,drop=True)
+        # Remove singleton 'method' dimension
+        stats = stats.isel(method=0,drop=True)
+        # Make demise onset + duration
+        stats['demise'] = stats['onset']+stats['duration']
+        # Get area mean
+        stats = area_mean(stats)
+
+    #------------- Preprocess -------------
+    ## Calculate advection
+    if np.any([re.search('advT',v) for v in plot_vars]):
+        # Get dy/dx in m
+        xlon, ylat = np.meshgrid(ds.lon, ds.lat)
+        R = earth_radius(ylat)
+
+        dlat = np.deg2rad(np.gradient(ylat, axis=0))
+        dlon = np.deg2rad(np.gradient(xlon, axis=1))
+
+        dy = dlat * R
+        dx = dlon * R * np.cos(np.deg2rad(ylat))
+
+        # Get T gradient
+        ds['dtdy'] = ds.ta.differentiate('lat')/dy
+        ds['dtdx'] = ds.ta.differentiate('lon')/dx
+
+        # Calculate T advection
+        ds['advT'] = ds.ua*ds.dtdx+ds.va*ds.dtdy
+
+        if np.any([re.search('nadvT',v) for v in plot_vars]):
+            # Get negative advection (make adv _into_
+            # region positive) for ease of interpretation
+            ds['nadvT'] = -ds['advT']
+
+            if 'nadvTday' in plot_vars:
+                # Convert from K/s to K/day for ease 
+                # of interpretation
+                ds['nadvTday'] = ds['nadvT']*60*60*24
+
+    ## Subset to only variables needed to plot
+    ds = ds[[re.sub('\-nsurf','',v) for v in [comp_var,*plot_vars]]] 
+
+    ## Calculate HoA double-peaked region mean
+    ds = area_mean(subset_to_srat(ds,srat_mod = mod_p))
+
+    ## Convert all temperature variables to Celsius, if desired
+    if KtoC:
+        for var in [v for v in [comp_var,*plot_vars] if re.search('^ta',v)]:
+            ds[re.sub('\-nsurf','',var)] = ds[re.sub('\-nsurf','',var)]-273.15
+
+        labels = {k:re.sub(r'\[\$\^\\circ\$ C\]','[K]',v) for k,v in labels.items()}
+
+
+    #------------- Plot -------------
+    fig = plt.figure(figsize=(10,((len(plot_vars)+1)//2)*4))
+
+    for var,plt_idx in zip(plot_vars,np.arange(0,len(plot_vars))): #rsds
+        ax = plt.subplot(len(plot_vars) // 2,2,plt_idx + 1)
+
+        # Set data to plot
+        if comp_var is not None:
+            plot_data = [ds[var],ds[re.sub('\-nsurf','',comp_var)]]
+        else:
+            plot_data = ds[var]
+
+        # Set annotations
+        title = labels[var]
+        ylabels = ['',labels[comp_var]]
+
+        # Set seasonal shading 
+        if add_season_shading:
+            if plt_idx == 0:
+                axv_shading={r'$\mathit{Gu}$'+'\nLong r.':[stats.isel(season=0).onset,stats.isel(season=0).demise],
+                             r'$\mathit{Deyr}$'+'\nShort r.':[stats.isel(season=1).onset,stats.isel(season=1).demise]}
+            else:
+                # Hack, but `figure_climatology()` is currently set to not
+                # annotate shading if there are no alphanumeric characters in
+                # the shading title - but the keys still need to be different
+                # so you can index the dictionary
+                axv_shading={'':[stats.isel(season=0).onset,stats.isel(season=0).demise],
+                             ' ':[stats.isel(season=1).onset,stats.isel(season=1).demise]}
+        else:
+            axv_shading=None
+
+
+        # Plot climatology
+        fig,ax=figure_climatology(plot_data,
+                           ax=ax,fig=fig,
+                           show_legend=False,
+                           plot_axes='diff',
+                           colors=['tab:blue','tab:red'],
+                           ylabel=ylabels,
+                           axv_shading=axv_shading,
+                           axv_shading_color='tan',)
+
+        # Set title
+        ax[0].set_title(labels[var],color='tab:blue')
+
+        # Add equinox lines, if desired
+        if add_equinox:
+            for d in [79,266]:
+                ax[0].axvline(d,color='grey',linewidth=0.5)
+                if plt_idx == 0:
+                    ax[0].annotate('equinox',(d,ax[0].get_ylim()[0]+1),va='bottom',ha='right',color='grey',
+                                 xycoords='data',rotation=90)  
+
+        # Subplot lettering
+        ax[0].annotate(string.ascii_lowercase[plt_idx]+'.',
+                        [0.01,1.01],xycoords='axes fraction',
+                        va='bottom',ha='left',fontsize=13,fontweight='bold')
+
+
+    plt.subplots_adjust(wspace=0.4,hspace=0.25)
+
+    #------------- Print -------------
+    if save_fig:
+        utility_print(output_fn)
         
         
         
@@ -925,6 +1174,12 @@ def figure_scatter(dss,
                         plt.legend(borderaxespad=0.5, 
                                bbox_to_anchor=(1,0.7),
                            loc="upper left")
+                        
+            # Subplot lettering
+            ax.annotate(string.ascii_lowercase[row_idx*2+seas_idx]+'.',
+                                    [0.01,1.01],xycoords='axes fraction',
+                                    va='bottom',ha='left',fontsize=13,fontweight='bold')
+
 
     plt.subplots_adjust(hspace=0.3)
     

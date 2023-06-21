@@ -1,3 +1,4 @@
+# Code to plot main text Figure 2
 import xarray as xr
 import geopandas as gpd
 import numpy as np
@@ -11,21 +12,23 @@ from matplotlib import ticker as mticker
 import cmocean
 from scipy import stats as sstats
 
-from funcs_support import get_params, area_mean, utility_print
+from funcs_support import get_params, get_subset_params, area_mean, utility_print
+from funcs_load import load_raw
 dir_list = get_params()
+subset_params_all = get_subset_params()
 
 #--------------- Setup ----------------
 add_geom = True # Add boxes
 roll_w = 40 # Window of rolling average for climatology insets
-subset_params = {'lat':slice(-10,20),'lon':slice(28,52)} # Plot extent
+subset_params = subset_params_all['gha_slice'] # Plot extent
 
 save_fig = True
 output_fn = dir_list['figs']+'figure2'
 
 
 #----------------- Load data -----------------
-stats = xr.open_dataset(dir_list['proc']+'CHIRPS/pr_doyavg_CHIRPS_historical_seasstats_dunning_19810101-20221231_Africa.nc')
-ds = xr.open_dataset(dir_list['raw']+'CHIRPS/pr_day_CHIRPS_historical_obs_19810101-20221231_Africa.nc')
+stats = load_raw('pr_doyavg_*_GHA.nc',dir_list['proc']+'CHIRPS/')
+ds = load_raw('pr_day_*_GHA.nc',dir_list['raw']+'CHIRPS/')
 
 # Subset
 stats = stats.sel(**subset_params)
@@ -39,7 +42,7 @@ ds = ds.groupby('time.dayofyear').mean()
 ds['seas_ratio'] = stats.seas_ratio
 
 # Get ISO-standard borders
-gdf = gpd.read_file('/dx01/kschwarz/aux_data/ne_10m_admin_0_countries_iso/ne_10m_admin_0_countries_iso.shp')
+gdf = gpd.read_file(dir_list['aux']+'ne_10m_admin_0_countries_iso/ne_10m_admin_0_countries_iso.shp')
 
 #----------------- Plot -----------------
 fig = plt.figure(figsize=(8,6))
@@ -203,17 +206,26 @@ gdf.cx[subset_params['lon'],subset_params['lat']].plot(ax=ax,facecolor='none',ed
 ax.axhline(0,color='k',linestyle='--') # Equator
 ax.set_title('"Double-peakedness" of CHIRPS rainfall\n(1981-2021)',fontsize=13)
 
+#{'hoa': {'lat': [-3, 12.5], 'lon': [32, 55]},
+# 'gha': {'lat': [-10, 20], 'lon': [28, 52]},
 if add_geom:
-    geoms = [geometry.box(28,-10,32,20),
-             geometry.box(33.5,-10,60,-3),
-             geometry.box(33.5,12.5,60,20),
-             geometry.box(55,-3,60,12.5)]
+    geoms = [geometry.box(subset_params['gha']['lon'][0],subset_params['gha']['lat'][0],
+                          subset_params['hoa']['lon'][0],subset_params['gha']['lon'][1]),
+             geometry.box(subset_params['hoa']['lon'][0],subset_params['gha']['lat'][0],
+                          60,subset_params['hoa']['lat'][0]),
+             geometry.box(subset_params['hoa']['lon'][0],subset_params['hoa']['lat'][1],
+                          60,subset_params['gha']['lat'][1]),
+             geometry.box(subset_params['hoa']['lon'][1],subset_params['hoa']['lat'][0],
+                          60,subset_params['hoa']['lon'][1])]
     ax.add_geometries(geoms, crs=ccrs.PlateCarree(), facecolor='white',edgecolor='none',alpha=0.5)
     
-    geom = geometry.box(33.5,-3,55,12.5)
+    geom = geometry.box(subset_params['hoa']['lon'][0],subset_params['hoa']['lat'][0],
+                        subset_params['hoa']['lon'][1],subset_params['hoa']['lat'][0])
     ax.add_geometries([geom],crs=ccrs.PlateCarree(),facecolor='none',edgecolor='k')
     
-    ax.text(51.5,-2.75,'Study area',ha='right',va='bottom',color='darkgreen',fontsize=18,
+    ax.text(subset_params['gha']['lon'][1]-0.5,
+            subset_params['hoa']['lat'][0]+0.25,
+            'Study area',ha='right',va='bottom',color='darkgreen',fontsize=18,
                 transform=ccrs.PlateCarree())
     
 gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,

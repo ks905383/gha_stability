@@ -17,7 +17,8 @@ from funcs_support import get_varlist,get_params,nan_argmax_xr,nan_argmin_xr
 def wrapper_seasonal_stats(subset_params,overwrite=False,
                            override_30day_convert=False,
                            alt_doy_for_ann=None,
-                           mod_subset=None):
+                           mod_subset=None,
+                           proc_year=True):
     ''' Wrapper function calculating seasonal stats on all precipitation files
     
     1) Get lists of models with precipitation files
@@ -31,8 +32,8 @@ def wrapper_seasonal_stats(subset_params,overwrite=False,
     # Figure out which models have precipitation files, and get 
     # filenames
     #--------------------------------------------------------------#
-    mod_list = get_varlist(var=['pr'])
     dir_list = get_params()
+    mod_list = get_varlist(source_dir=dir_list['raw'],var=['pr'])
     
     mod_fns = dict()
 
@@ -60,7 +61,8 @@ def wrapper_seasonal_stats(subset_params,overwrite=False,
         process_seasonal_stats_dunning(mod,mod_fns,dir_list,overwrite=overwrite,
                                        subset_params=subset_params,
                                        override_30day_convert=override_30day_convert,
-                                       alt_doy_for_ann=alt_doy_for_ann)
+                                       alt_doy_for_ann=alt_doy_for_ann,
+                                       proc_year=proc_year)
         
 
 
@@ -70,7 +72,7 @@ def seas_params_dunning(ds,subset_params,dir_list,num_seasons=2,save_temp=True,o
                         override_30day_convert=False, # If False, then subset_params timeslices that end in 31 get changed to 30 if the last day of month is 30 instead of 31 (implying, sometimes, a 360-day-calendar). Problematic if input doesn't end on 12-31.
                         diag_mode=False): #diag_mode returns C in addition to ds,bi_idxs
     '''
-    aaaaaa
+    Calculate seasonal onsets/demises and associated seasonal statistics on a rainfall climatology
     
     '''
     
@@ -491,7 +493,7 @@ def seas_params_dunning_byyear(ds,bi_idxs,
                                mod_name='',yr_str='',fn_suffix='',ignore_warnings=True,
                               overwrite=False):
     '''
-    aaaaaa
+    Calculate seasonal onsets/demises and associated seasonal statistics on each year of rainfall data
     
     '''
     
@@ -729,11 +731,12 @@ def seas_params_dunning_byyear(ds,bi_idxs,
 
 def process_seasonal_stats_dunning(mod,mod_fns,dir_list,
                                    subset_params,
+                                   proc_year = True, 
                                    overwrite=False,
                                    override_30day_convert=False,
                                    alt_doy_for_ann=None):
     '''
-    aaaaaa
+    Calculate both climatological and year-by-year season statistics
     
     '''
 
@@ -762,14 +765,14 @@ def process_seasonal_stats_dunning(mod,mod_fns,dir_list,
               ') of the file of model '+mod+'. Code cannot yet deal with that, '+
               'so processing for '+mod+' is skipped.')
         print('')
-        # NOTE THIS JUST CHECKS FOR YEAR< NOT THE WHOLE DATE - GOT A WEIRD ERROR AND I'M TIRED TO I'M KEEPING IT THIS FOR NOW
+        # NOTE THIS JUST CHECKS FOR YEAR< NOT THE WHOLE DATE - GOT A WEIRD ERROR AND I'M TIRED SO I'M KEEPING IT THIS FOR NOW
     else:
     
         # Set filename characteristics
         yr_str_avg = '_'+'-'.join([re.sub('-','',subset_params['time'][x]) for x in np.arange(0,2)])
         yr_str_yr = '_'+'-'.join([re.sub('-','',
                                re.sub(subset_params['time'][0][0:4],
-                                      str(int(float(subset_params['time'][0][0:4]))+1),
+                                      str(int(float(subset_params['time'][0][0:4]))), #+1
                                       subset_params['time'][0])),
                                  re.sub('-','',re.sub(subset_params['time'][1][0:4],
                                       str(int(float(subset_params['time'][1][0:4]))-1),
@@ -834,52 +837,55 @@ def process_seasonal_stats_dunning(mod,mod_fns,dir_list,
             # Calculate seasonal statistics of average year
             print('processing average seasonal statistics')
             ds_tmp,bi_idxs = seas_params_dunning(ds_tmp,subset_params,dir_list,mod_name=mod,yr_str=yr_str_avg.strip('_'),fn_suffix=subset_params['fn_suffix'],
-                                                overwrite=overwrite,output_fn = output_fn_avg)
-            
-            print('processing year-by-year seasonal statistics')
+                                                        overwrite=overwrite,output_fn = output_fn_avg)
+            if proc_year:
+                print('processing year-by-year seasonal statistics')
 
-            # Under certain (?) conditions, the above code 
-            # can accidentally add a 'method' dimension to 
-            # the 'pr' variable (which should be the same
-            # for all, since it's not the seasonal stats
-            # but the underlying precipitation). This 
-            # takes care of that. (NB: uh, I don't think 
-            # seas_params_dunning still outputs pr?) 
-            if ('pr' in ds_tmp) and ('method' in ds_tmp.pr.dims):
-                ds_tmp['pr'] = ds_tmp.pr.isel(method=0)
+                # Under certain (?) conditions, the above code 
+                # can accidentally add a 'method' dimension to 
+                # the 'pr' variable (which should be the same
+                # for all, since it's not the seasonal stats
+                # but the underlying precipitation). This 
+                # takes care of that. (NB: uh, I don't think 
+                # seas_params_dunning still outputs pr?) 
+                if ('pr' in ds_tmp) and ('method' in ds_tmp.pr.dims):
+                    ds_tmp['pr'] = ds_tmp.pr.isel(method=0)
 
-            # Calculate seasonal statistics by year
-            # The overwrite thing is an issue because 
-            # the filename can be changed within the above
-            # code because of nan issues, which can lead 
-            # to false filenames here and unnecessary processing
-            if overwrite | (not os.path.exists(output_fn_yr)):
-                if alt_doy_for_ann is not None:
-                    if type(alt_doy_for_ann) is str:
-                        ds_tmp = xr.open_dataset(alt_doy_for_ann)
-                    else:
-                        ds_tmp = alt_doy_for_ann
-                    
+                # Calculate seasonal statistics by year
+                # The overwrite thing is an issue because 
+                # the filename can be changed within the above
+                # code because of nan issues, which can lead 
+                # to false filenames here and unnecessary processing
+                if overwrite | (not os.path.exists(output_fn_yr)):
+                    if alt_doy_for_ann is not None:
+                        if type(alt_doy_for_ann) is str:
+                            ds_tmp = xr.open_dataset(alt_doy_for_ann)
+                        else:
+                            ds_tmp = alt_doy_for_ann
 
-                # Re-add precip variable that's removed by processing 
-                # above
-                if 'pr' not in ds_tmp:
-                    ds_tmp['pr'] = da_pr
-                    
-                dims_tmp = [e for e in ds_tmp.pr.dims if e not in ('time','dayofyear','method','season','bnds','year')]
-                
-                ds_tmp = ds_tmp.stack(allv=dims_tmp)
-                if alt_doy_for_ann is not None:
-                    bi_idxs = (ds_tmp.seas_ratio<1).values.nonzero()[0]
-                
-                ds_tmp_year = seas_params_dunning_byyear(ds_tmp,bi_idxs,#ds.stack(allv=('lat','lon')),
-                                                         mod_name=mod,yr_str=yr_str_yr,fn_suffix=subset_params['fn_suffix'],
-                                                         overwrite=overwrite,output_fn = output_fn_yr)
-                
-                ds_tmp = ds_tmp.unstack()
+
+                    # Re-add precip variable that's removed by processing 
+                    # above
+                    if 'pr' not in ds_tmp:
+                        ds_tmp['pr'] = da_pr
+
+                    dims_tmp = [e for e in ds_tmp.pr.dims if e not in ('time','dayofyear','method','season','bnds','year')]
+
+                    ds_tmp = ds_tmp.stack(allv=dims_tmp)
+                    if alt_doy_for_ann is not None:
+                        bi_idxs = (ds_tmp.seas_ratio<1).values.nonzero()[0]
+
+                    ds_tmp_year = seas_params_dunning_byyear(ds_tmp,bi_idxs,#ds.stack(allv=('lat','lon')),
+                                                             mod_name=mod,yr_str=yr_str_yr,fn_suffix=subset_params['fn_suffix'],
+                                                             overwrite=overwrite,output_fn = output_fn_yr)
+
+                    ds_tmp = ds_tmp.unstack()
 
             # Return
-            return ds_tmp,ds_tmp_year
+            if proc_year:
+                return ds_tmp,ds_tmp_year
+            else:
+                return ds_tmp
 
         else:
             print('files: ')

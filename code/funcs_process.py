@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from tqdm.notebook import tqdm 
 import warnings
 
-from funcs_support import (area_mean,get_params,subset_to_srat)
+from funcs_support import (area_mean,get_params,subset_to_srat,NotUniqueFile)
 from funcs_load import load_raw
 
 # Get list of file directories
@@ -22,7 +22,9 @@ dir_list = get_params()
 def calculate_h(freq = 'day',
                 mod = 'MERRA2',
                 subset_params = {'time':slice('19800101','20211231')},
+                source_dir = 'raw',
                 comp_vars = ['ta','hus'],
+                varname_add = '',#-nsurf
                 dir_list=dir_list,overwrite=False,
                 c_p = 1004.6,
                 L_v = 2.257e6, 
@@ -82,19 +84,21 @@ def calculate_h(freq = 'day',
     #------------------ Setup ------------------
     # Get all suffixes of `h` components (T and hus)
     suffixes = [[re.split('\_',re.split('\/',fn)[-1])[-1] 
-                 for fn in glob.glob(dir_list['raw']+mod+'/'+var+'_'+freq+'_'+mod+'_*.nc')] 
+                 for fn in glob.glob(dir_list[source_dir]+mod+'/'+var+varname_add+'_'+freq+'_'+mod+'_*.nc')] 
                 for var in comp_vars]
     # Get suffixes that match up across comp_vars
     suffixes = list(reduce(np.intersect1d,suffixes))
     
+    #------------------ Process ------------------
     # Process by geographic subset (as identified by suffixes)
     for suffix in suffixes:
         print('\n--------------------------\n'+
               'processing files of the form: "*'+suffix+'"!')
         #---------------- Load ----------------
         # Load files 
-        dss = {var:load_raw(mod+'/'+var+'_'+freq+'_*'+suffix,
-                            subset_params = subset_params)
+        dss = {var:load_raw(mod+'/'+var+varname_add+'_'+freq+'_*'+suffix,
+                            subset_params = subset_params,
+                            search_dir = dir_list[source_dir])
               for var in comp_vars}
         # Merge into single ds
         dss = xr.merge([v for k,v in dss.items()])
@@ -102,7 +106,7 @@ def calculate_h(freq = 'day',
         #---------------- Manage output ----------------
         # Get string frequency, model, experiment, run # from 
         # input filenames. This assumes one filename per suffix... 
-        output_fn_comps = '_'.join(re.split('\_',re.split('\/',glob.glob(dir_list['raw']+mod+'/'+comp_vars[0]+'_'+freq+'_*'+suffix)[0])[-1])[1:5])
+        output_fn_comps = '_'.join(re.split('\_',re.split('\/',glob.glob(dir_list[source_dir]+mod+'/'+comp_vars[0]+varname_add+'_'+freq+'_*'+suffix)[0])[-1])[1:5])
 
         # Get date from data 
         if type(dss.time.min().values) == np.datetime64:
@@ -110,7 +114,7 @@ def calculate_h(freq = 'day',
                     pd.to_datetime(str(dss.time.max().values)).strftime('%Y%m%d'))
 
         # Build output filenames for `h`, `hsat`, `qsat`
-        output_fns = {var:dir_list['proc']+mod+'/'+var+'_'+output_fn_comps+'_'+dates+'_'+suffix
+        output_fns = {var:dir_list['proc']+mod+'/'+var+varname_add+'_'+output_fn_comps+'_'+dates+'_'+suffix
                       for var in ['hsat','h','qsat']}
         
         if overwrite or np.any([not os.path.exists(v) for k,v in output_fns.items()]):
@@ -182,25 +186,45 @@ def calculate_h(freq = 'day',
                     ds.to_netcdf(output_fns[v])
                     print(output_fns[v]+' saved!')
                 else:
-                    print(os.path.exists(output_fns[v])+' already exists!')
+                    print(output_fns[v]+' already exists!')
         else:
             print('all files:\n'+
                   '\n'.join('   '+v for k,v in output_fns.items())+'\n'+
                   'already exist!')
             
-def calculate_hs(freq = 'day',mod = 'MERRA2',
-                 subset_params = {'time':slice('19800101','20211231')},
-                 comp_vars = ['tas','huss'], #Add zs if you have it
-                 dir_list=dir_list,overwrite=False,
-                 c_p = 1004.6,
-                 L_v = 2.257e6, 
-                 g = 9.80665, # m/s^2
-                 ):
-    """ Calculate surface h 
+
+
+def subset_files(mod,subset,source_dir,output_dir,
+                 var_list = None,
+                 freq='day',dir_list = dir_list,
+                 overwrite=False):
+    """ Subsets all files of a model in a particular directory, 
+    saves original copy in output_dir
     
+    To make files smaller for export / sharing. 
     
     Parameters
     ------------------
+    mod : str, by default 'MERRA2'
+        which data product to use
+        
+    subset : dict
+        piped as `ds.sel(**subset)`
+    
+    source_dir : str, by default 'raw'
+        which `dir_list[source_dir]` directory to search for files 
+        to process
+        
+    output_dir : str, by default 'proc'
+        which `dir_list[source_dir]+mod+'/'+output_dir` directory 
+        to save the output file in
+        
+    var_list : None or list, by default None
+        if a list, then only files with the variables listed in 
+        `var_list` will be processed (based on the [var] slot in 
+        their filenames); if None, then all files with a given 
+        `freq` and `mod` in `dir_list[source_dir]` will be processed
+    
     dir_list : list
         output from get_params().
     
@@ -211,91 +235,57 @@ def calculate_hs(freq = 'day',mod = 'MERRA2',
     freq : str, by default 'day'
         which frequency files to look for
     
-    mod : str, by default 'MERRA2'
-        which data product to use
-        
-    subset_params : dict, by default {'time':slice('19800101,20211231')}
-        whether to subset by in `load_raw()`. NB use only time, since 
-        this code cycles through all suffixes... 
-        
-    c_p : float, by default 1004.6 (J/K)
     
-    L_v : float, by default 2.257e6 (J/kg)
-    
-    g : float, by default 9.80665 (m/s^2)
-        graviational constant
-        
     Saves
     ------------------
+    All files in the directory `dir_list[source_dir]+mod+'/'`, subset
+    to `subset`, with the original files placed in 
+        `dir_list[source_dir]+mod+'/'
     
     """
-    # Get all suffixes of `h` components (T and hus)
-    suffixes = [[re.split('\_',re.split('\/',fn)[-1])[-1] 
-                 for fn in glob.glob(dir_list['raw']+mod+'/'+var+'_'+freq+'_'+mod+'_*.nc')] 
-                for var in comp_vars]
-    # Get suffixes that match up across comp_vars
-    suffixes = list(reduce(np.intersect1d,suffixes))
     
-    # Process by geographic subset (as identified by suffixes)
-    for suffix in suffixes:
-        print('\n--------------------------\n'+
-              'processing files of the form: "*'+suffix+'"!')
-        #---------------- Load ----------------
-        # Load files 
-        dss = {var:load_raw(mod+'/'+var+'_'+freq+'_*'+suffix,
-                            subset_params = subset_params)
-              for var in comp_vars}
-        if 'zs' not in comp_vars:
-            dss['zs'] = load_raw('zs_fx_GTOPO30_'+mod+'grid_*'+suffix,
-                                 search_dir = dir_list['aux'])
-        # Merge into single ds
-        dss = xr.merge([v for k,v in dss.items()])
+    # Get all files that match the data frequency, model
+    file_list = glob.glob(dir_list[source_dir]+mod+'/*_'+freq+'_'+mod+'_*.nc')
+    
+    # Subset by variable if desired
+    if type(var_list) == list:
+        search_str = dir_list[source_dir]+mod+'/'+'('+'\_)|('.join(var_list)+'\_)'+freq+'\_'+mod+'.*\.nc'
+        file_list = [fn for fn in file_list if re.search(search_str,fn)]
         
-        #---------------- Manage output ----------------
-        # Get string frequency, model, experiment, run # from 
-        # input filenames. This assumes one filename per suffix... 
-        output_fn_comps = '_'.join(re.split('\_',re.split('\/',glob.glob(dir_list['raw']+mod+'/'+comp_vars[0]+'_'+freq+'_*'+suffix)[0])[-1])[1:5])
-
-        # Get date from data 
-        if type(dss.time.min().values) == np.datetime64:
-            dates = (pd.to_datetime(str(dss.time.min().values)).strftime('%Y%m%d') + '-' + 
-                    pd.to_datetime(str(dss.time.max().values)).strftime('%Y%m%d'))
-
-        # Build output filenames for `h`, `hsat`, `qsat`
-        output_fn = dir_list['proc']+mod+'/hs_'+output_fn_comps+'_'+dates+'_'+suffix
+    if len(file_list) == 0:
+        if type(var_list) == list:
+            warnings.warn('No files found for search '+dir_list[source_dir]+mod+'/*_'+freq+'_'+mod+'_*.nc, '+
+                          'subset to variables: '+', '.join(var_list))
+        else:
+            warnings.warn('No files found for search '+dir_list[source_dir]+mod+'/*_'+freq+'_'+mod+'_*.nc')
         
-        if overwrite or (not os.path.exists(output_fn)):
-            #---------------- Calculate ----------------
-            # --- Calculate `h` -----------
-            dss['hs'] = c_p*dss['tas'] + dss['zs']*g + L_v*dss['huss']
-                
-            #---------------- Save ----------------
-            desc = ('calculated as c_p*T + g*z + L_v*q, for '+
-                                        'c_p='+str(c_p)+' J/kgK, '+
-                                        'g='+str(g)+' m/s^2, '
-                                        'L_v='+str(L_v))
+    # Process by file
+    output_dir_full = dir_list[source_dir]+mod+'/'+output_dir+'/'
+    if not os.path.exists(output_dir_full):
+        os.mkdir(output_dir_full)
+        print(output_dir_full+' created!')
+    
+    for fn in file_list:
+        move_fn = output_dir_full+re.split('\/',fn)[-1]
+        if overwrite or (not os.path.exists(move_fn)):
+            ds = xr.open_dataset(fn)
+            
+            if np.all([k in ds.sizes for k in subset]):
+                ds = ds.sel(**subset)
 
-            if overwrite or (not os.path.exists(output_fn)):
-                ds = dss[['hs']]
-                ds.attrs['SOURCE'] = 'calculate_hs() from funcs_process.py'
-                ds.attrs['DESCRIPTION'] = desc
+                ds.attrs['SOURCE'] = ds.attrs['SOURCE'] + '--> subset to '+str(subset)+', with original saved in '+output_dir
 
-                if os.path.exists(output_fn):
-                    os.remove(output_fn)
-                    print(output_fn+' removed to allow overwrite!')
+                # Move original file
+                os.system('mv '+fn+' '+move_fn)
+                print('original file moved to '+move_fn)
 
-                if not os.path.exists(os.path.dirname(output_fn)):
-                    os.mkdir(os.path.dirname(output_fn))
-                    print(os.path.dirname(output_fn)+'/ created!')
-
-                ds.to_netcdf(output_fn)
-                print(output_fn+' saved!')
+                # Save subset file
+                ds.to_netcdf(fn)
+                print('subset '+fn+' saved!')
             else:
-                print(os.path.exists(output_fn)+' already exists!')
-
-    
-   
-    
+                print('not all of '+', '.join([k for k in subset])+' found in ds dims ('+', '.join([k for k in ds.sizes])+'), skipped.')
+        else:
+            print(fn+' already subset, moved to '+output_dir+'; skipped.')
     
             
 def calculate_nearsurface(var_list = 'all',
@@ -311,7 +301,7 @@ def calculate_nearsurface(var_list = 'all',
     location that is above the highest `nan` level is created in 
     a new `ds` and saved. 
     
-     Parameters
+    Parameters
     ------------------
     dir_list : list
         output from get_params().
@@ -395,14 +385,26 @@ def calculate_nearsurface(var_list = 'all',
                 ds = ds.load()
                 
                 # Get which plev has no nans (searching a subset to save time) 
-                ds_nonas = (~np.isnan(ds.isel(**nan_search_subset))).any('time')
+                ds_nonas = ~(np.isnan(ds.isel(**nan_search_subset)).any('time'))
+                
+                # Get if any locations have nans in all vertical levels (this would
+                # break the ufunc below) 
+                ds_allnas = (~ds_nonas).all(icdim)
+                ds_nonas = ds_nonas.where(~ds_allnas,True)
 
                 # Get plev index with no nans
-                ds_surfidxs = xr.apply_ufunc(lambda x: np.where(x)[0][0]+1,
+                ds_surfidxs = xr.apply_ufunc(lambda x: np.where(x)[0][0],
                                ds_nonas,input_core_dims=[[icdim]],vectorize=True)
 
                 # Subset to no-nans plev
                 ds_out = ds.isel({icdim:ds_surfidxs[var]})
+                
+                # Set locations with all nans in the vertical to nan (technically not
+                # needed since `ds` is already nan at those locations anyways, but
+                # worth being robust here)
+                ds_out = ds_out.where(~ds_allnas[var])
+                ds_out[icdim] = ds_out[icdim].where(~ds_allnas[var])
+                
 
                 # Add processing details
                 ds_out.attrs['SOURCE'] = ds_out.attrs['SOURCE']+' --> calculate_nearsurface() from funcs_process.py'
@@ -615,19 +617,269 @@ def calculate_unstable(freq = 'day',
             print(output_fn+' saved!')
         else:
             print(output_fn+' already exists!')
+            
+def calculate_uq(freq = 'day',
+                 mod = 'MERRA2',
+                 subset_params = None,
+                 source_dirs = ['raw','proc'],
+                 varstrs_add = ['','-nsurf'],
+                 comp_vars = ['ua','va','hus'],
+                 dir_list=dir_list,overwrite=False,):
+    
+    """ Calculate $\vec{u}q$
+    
+    Finds all file suffix groups that have `ua`, `va`, and
+    `hus` files (with all forms of `varstrs_add` added to the
+    variable names), and calculates `uq` and `vq` from them. 
+    
+    Parameters
+    ------------------
+    source_dirs : list, by default ['raw','proc']
+        which directories (of `dir_list`) to cycle through
+        to find files
+        
+    varstrs_add : list, by default ['','-nsurf']
+        which variable name additions to cycle through to 
+        find files 
+        
+    comp_vars : list, by defualt ['ua','va',hus']
+        the filename variables to search for and load
+    
+    dir_list : list
+        output from get_params().
+    
+    overwrite : bool, by default False
+        if True, then exsiting file with same name as output file 
+        is removed before saving. 
+        
+    freq : str, by default 'day'
+        which frequency files to look for
+    
+    mod : str, by default 'MERRA2'
+        which data product to use
+        
+    subset_params : dict, by default None
+        whether to subset by in `load_raw()`. NB use only time, since 
+        this code cycles through all suffixes... 
+    """
+
+    #------------------ Setup ------------------
+    suffixes = dict()
+    # Get filename suffixes that match acorss all variables
+    for source_dir in source_dirs:
+        suffixes[source_dir] = dict()
+        for varstr in varstrs_add:
+            # Get all suffixes of `h` components (T and hus)
+            suffixes[source_dir][varstr] = [[re.split('\_',re.split('\/',fn)[-1])[-1] 
+                         for fn in glob.glob(dir_list[source_dir]+mod+'/'+var+varstr+'_'+freq+'_'+mod+'_*.nc')] 
+                        for var in comp_vars]
+            # Get suffixes that match up across comp_vars
+            suffixes[source_dir][varstr] = list(reduce(np.intersect1d,suffixes[source_dir][varstr]))
+
+            # Delete if empty
+            if len(suffixes[source_dir][varstr]) == 0:
+                del suffixes[source_dir][varstr]
+
+    #------------------ Process ------------------
+    # Process by geographic subset (as identified by suffixes)
+    for source_dir in suffixes:
+        for varstr in suffixes[source_dir]:
+            for suffix in suffixes[source_dir][varstr]:
+                print('\n--------------------------\n'+
+                      'processing files of the form: "*'+suffix+'" in directory '+source_dir+' with variables *'+varstr+'!')
+                #---------------- Load ----------------
+                # Load files 
+                dss = {var:load_raw(mod+'/'+var+varstr+'_'+freq+'_*'+suffix,
+                                    subset_params = subset_params,
+                                    search_dir = dir_list[source_dir])
+                      for var in comp_vars}
+                # Merge into single ds
+                dss = xr.merge([v for k,v in dss.items()])
+
+                #---------------- Manage output ----------------
+                # Get string frequency, model, experiment, run # from 
+                # input filenames. This assumes one filename per suffix... 
+                output_fn_comps = '_'.join(re.split('\_',re.split('\/',                                                         glob.glob(dir_list[source_dir]+mod+'/'+comp_vars[0]+varstr+'_'+freq+'_*'+suffix)[0])[-1])[1:5])
+
+                # Get date from data 
+                if type(dss.time.min().values) == np.datetime64:
+                    dates = (pd.to_datetime(str(dss.time.min().values)).strftime('%Y%m%d') + '-' + 
+                             pd.to_datetime(str(dss.time.max().values)).strftime('%Y%m%d'))
+
+                # Build output filenames for `h`, `hsat`, `qsat`
+                output_fns = {var:dir_list['proc']+mod+'/'+var+varstr+'_'+output_fn_comps+'_'+dates+'_'+suffix
+                              for var in ['uq','vq']}
+
+                if overwrite or np.any([not os.path.exists(v) for k,v in output_fns.items()]):
+                    #---------------- Calculate ----------------
+                    dss['uq'] = dss['ua']*dss['hus']
+                    dss['vq'] = dss['va']*dss['hus']
+
+                    #---------------- Save ----------------
+                    descs = {l+'q':'Calculated as '+l+'a * q'
+                             for l in ['u','v']}
+
+                    for v in output_fns:
+                        if overwrite or (not os.path.exists(output_fns[v])):
+                            ds = dss[[v]]
+                            ds.attrs['SOURCE'] = 'calculate_uq() from funcs_process.py'
+                            ds.attrs['DESCRIPTION'] = descs[v]
+
+                            if os.path.exists(output_fns[v]):
+                                os.remove(output_fns[v])
+                                print(output_fns[v]+' removed to allow overwrite!')
+
+                            if not os.path.exists(os.path.dirname(output_fns[v])):
+                                os.mkdir(os.path.dirname(output_fns[v]))
+                                print(os.path.dirname(output_fns[v])+'/ created!')
+
+                            ds.to_netcdf(output_fns[v])
+                            print(output_fns[v]+' saved!')
+                        else:
+                            print(os.path.exists(output_fns[v])+' already exists!')
+                else:
+                    print('all files:\n'+
+                          '\n'.join('   '+v for k,v in output_fns.items())+'\n'+
+                          'already exist!')
 
             
-def calculate_max(resample = {'time':'1D'}):
-    """ Resample max and save
+def calculate_resampled(var = 'hdiff',resample = {'time':'1D'},
+                        freq = '3hr',
+                        output_freq = 'day',
+                        mod = 'MERRA2',
+                        func = 'max',
+                        func_str = None,
+                        search_str = '*.nc',
+                        use_surf=False,
+                        dir_list = dir_list,overwrite=False,
+                        save=True,return_ds=False):
+    """ Resample by a function and save
     
+    Note: currently implicitly mainly intended for _temporal_
+    resampling. Resampling spatially (or by another dimension)
+    may cause filename issues if `save=True`. 
+    
+    Parameters
+    ---------------
+    var : str, by default 'hdiff'
+    
+    resample : dict, by default {'time':'1D'}
+        piped into `ds.resample()`
+        
+    func : str or function, by default 'max'
+        if 'max' or 'min', then 
+            `ds.resample(resample).max()` 
+        (or `.min()`) is called. Otherwise, 
+            `ds.resample(resample).apply(func)
+        is called. 
+        
+    func_str : str or None, by default None
+        if `func=='max'` or `'min'`, then that 
+        is added to the output variable filename.
+        Otherwise, input a str to add to the output
+        variable filename. 
+        
+    freq : str, by default '3hr'
+        what frequency data to look for
+        
+    output_freq : str, by default 'day'
+        what frequency to name the output data in the 
+        output filename
+    
+    dir_list : list
+        output from get_params().
+    
+    overwrite : bool, by default False
+        if True, then exsiting file with same name as output file 
+        is removed before saving. 
+        
+    search_str : str, by default "*.nc"
+        used to search for files from which to get data. 
+        The full search call is: 
+            `glob.glob(dir_list['proc']+mod+'/hdiff_'+freq+'_'+mod+search_str)`
+            
+        (so, use `glob` standards, not REs!)
+
+    freq : str, by default 'day'
+        which frequency files to look for
+    
+    mod : str, by default 'MERRA2'
+        which data product to use
+        
+    save : bool, by default True
+        whether to save output
+        
+    return_ds : bool, by default False
+        whether to return resampled, calculated dataset
+        
+    Returns
+    ------------------
+    if `return_ds==True`, the processed dataset. 
+        
+    Saves
+    ------------------
+    From every file found, a dataset with the maximum 
+    over the timeframe given by the `resample` dict is 
+    saved with the same file name, but "[var]" replaced 
+    by "[var]max". 
     
     """
+    # Get list of files to process
+    search_str = dir_list['proc']+mod+'/'+var+'_'+freq+'_'+mod+search_str
+    fns = glob.glob(search_str)
     
-    ds_out = ds.resample({'time':'1D'}).max()
+    if len(fns) == 0:
+        warnings.warn('No files found for search: '+search_str)
+    
+    # Process by file 
+    for fn in fns: 
+        # Get filename to save, replacing [var] with, e.g., [var]max
+        # and the frequency with the output frequency
+        output_fn = re.sub(var+'\_',var+func_str,
+                           re.sub('\_'+freq+'\_','\_'+output_freq+'\_',fn))
+        
+        if overwrite or (not os.path.exists(output_fn)):
+            ds = xr.open_dataset(fn)
+        
+            if type(func) == str:
+                if func == 'max':
+                    ds_out = ds.resample(resample).max()
+                elif func == 'min':
+                    ds_out = ds.resample(resample).min()
+                else:
+                    raise KeyError('Only "max" and "min" are supported as string inputs for `func`; if you wish to run another function, input the function directly')
+            else:
+                ds_out = ds.resample(resample).apply(func)
+            
+            if save: 
+                ds.attrs['SOURCE'] = 'calculate_resampled() from funcs_process.py'
+                ds.attrs['DESCRIPTION'] = 'resampled from '+freq+' to '+output_freq+' using the function '+str(func)
+
+                if os.path.exists(output_fn):
+                    os.remove(output_fn)
+                    print(output_fn+' removed to allow overwrite!')
+
+                if not os.path.exists(os.path.dirname(output_fn)):
+                    os.mkdir(os.path.dirname(output_fn))
+                    print(os.path.dirname(output_fn)+'/ created!')
+
+                ds.to_netcdf(output_fn)
+                print(output_fn+' saved!')
+            
+            if return_ds:
+                return ds
+        else:
+            if return_ds:
+                ds = xr.open_dataset(output_fn)
+                return ds
+            else:
+                print(output_fn+' already exists!')
+            
+        
     
     
 def create_season_mask(ds,stats):
-    """ Create masks of belonging to a particular season
+    """ Create boolean masks of belonging to a particular season
     
     
     Parameters
@@ -657,7 +909,7 @@ def create_season_mask(ds,stats):
     seasons = ds.season
 
     # Process 
-    for yr in tqdm(stats.year):
+    for yr in stats.year:
         # Boreal winter long dry season
         # (assuming that the new year starts with the long dry season everywhere,
         # not a super late short rain season. This tends to be true 'effectively'
@@ -735,10 +987,13 @@ def calculate_seasmeans(dir_list = dir_list,
                         calculate_local = True, 
                         anomaly = None,
                         seas_grouping_mean = 'time.dayofyear',
-                        stats_suffix='19810101-20211231_Africa',
+                        stats_suffix=None,
                         overwrite = False,
                         return_output = False):
     """ Calculate seasonal means
+    
+    Calculate seasonal means using the Horn of Africa long/short
+    rain seasonal definitions. 
     
     Means are calculated in up to 4 ways, with the following names
     used as the method coordinate in the dimension 'kind':
@@ -788,10 +1043,10 @@ def calculate_seasmeans(dir_list = dir_list,
         piped into `load_raw()`.
         
     calculate_local : bool, by default False
-        if True, then, if the geographic ranges overlap, the mean 
-        based on a grid cell's local onset/demise is calculated as
-        `kind='dunning_local'`. Only values at locations within the
-        double-peaked region are returned. 
+        if True, then, if the geographic ranges overlap with the 
+        seasonal stats data, the mean based on a grid cell's local 
+        onset/demise is calculated as `kind='dunning_local'`. Only 
+        values at locations within the double-peaked region are returned. 
         
     anomaly : str or None, by default None
         if not `None`, then the means of the anomaly are calculated: 
@@ -831,13 +1086,21 @@ def calculate_seasmeans(dir_list = dir_list,
     #------------------ Load ------------------
     #-------- Load seasonal stats
     # Load seasonal stats
-    stats_fn = dir_list['proc']+mod_p+'/pr_ann_'+mod_p+'_historical_seasstats_dunning_'+stats_suffix+'.nc'
+    if stats_suffix is None:
+        stats_fn = glob.glob(dir_list['proc']+mod_p+'/pr_ann_'+mod_p+'_*_seasstats_*.nc')
+        if len(stats_fn) > 1:
+            raise NotUniqueFile('More than one possible stats file found to load:'+'\n'.join(stats_fn)+'\nTo specify a stats file, use the `stats_suffix` parameter.')
+        else:
+            stats_fn = stats_fn[0]
+    else:
+        stats_fn = dir_list['proc']+mod_p+'/pr_ann_'+mod_p+'_historical_seasstats_dunning_'+stats_suffix+'.nc'
     stats = xr.open_dataset(stats_fn)
     # NaN out areas outside double-peaked region
     stats = subset_to_srat(stats,drop=True)
     # Remove singleton 'method' dimension
     stats = stats.isel(method=0,drop=True)
-    # Make demise onset + duration
+    # Make demise onset + duration to avoid wrap-around averaging 
+    # issues around the calendrical new year
     stats['demise'] = stats['onset']+stats['duration']
 
     # Calculate regional mean of the rainfall statistics 
@@ -857,7 +1120,7 @@ def calculate_seasmeans(dir_list = dir_list,
             suffixes = [suffixes]
 
     if len(suffixes)==0:
-        raise FileNotFoundError('no files found for search string: '+
+        raise FileNotFoundError('No files found for search string: '+
                                 dir_list[search_dir]+mod+'/'+var+'_'+freq+'_'+mod+'_*.nc')
 
 
@@ -914,11 +1177,15 @@ def calculate_seasmeans(dir_list = dir_list,
 
         # Build output filename
         if suffix_out is None:
-            suffix_out = suffix
-        output_fn = dir_list['proc']+mod+'/'+var+var_extra+'_seasavg_'+output_fn_comps+'_'+dates+'_'+suffix_out
+            suffix_out_tmp = suffix
+        else:
+            suffix_out_tmp = suffix_out
+        output_fn = dir_list['proc']+mod+'/'+var+var_extra+'_seasavg_'+output_fn_comps+'_'+dates+'_'+suffix_out_tmp
 
         #---------------------- Process ----------------------
         if overwrite or (not os.path.exists(output_fn)):
+            #------------------ Load data to allow for indexing ------------------
+            ds = ds.load()
 
             #------------------ Setup seasonal booleans ------------------
             tss = dict()
@@ -947,7 +1214,7 @@ def calculate_seasmeans(dir_list = dir_list,
                     tss['dunning_local'] = tss['dunning_local'].where(~((~np.isnan(stats.onset.isel(season=0))) & 
                                                                         (np.isnan(stats.onset.isel(season=1)))).all('year'))
 
-                    tss['dunning_local'].attrs['SOURCE'] = 'calculate_seasagg()[XX]'
+                    tss['dunning_local'].attrs['SOURCE'] = 'calculate_seasmeans() from funcs_process.py'
                     tss['dunning_local'].attrs['DESCRIPTION'] = 'boolean for when a given grid-cell-day is in a given season'
                     tss['dunning_local'].attrs['STATS_SOURCE'] = stats_fn
 
@@ -1101,7 +1368,7 @@ def calculate_seasmeans(dir_list = dir_list,
                                dim = pd.Index([k for k in ds_out],name='season'))
 
             #------------------ Output ------------------
-            ds_out.attrs['SOURCE'] = 'calculate_seasavgs() from funcs_process.py'
+            ds_out.attrs['SOURCE'] = 'calculate_seasmeans() from funcs_process.py'
             ds_out.attrs['DESCRIPTION'] = ('Seasonal mean values calculated from the seasonal stats '+
                                           ' listed in the STATS_FILE below')
             ds_out.attrs['STATS_FILE'] = stats_fn

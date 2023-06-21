@@ -9,6 +9,9 @@ import os
 import glob
 import warnings
 
+class NotUniqueFile(Exception):
+    """ Exception for when one file needs to be loaded, but the search returned multiple files """
+    pass
 
 
 def get_params():
@@ -41,6 +44,37 @@ def get_params():
     
     # Return
     return dir_list
+
+
+def get_subset_params():
+    ''' Get parameters 
+    
+    Outputs necessary subsetting parameters. 
+    
+    Parameters:
+    ----------------------
+    (none)
+    
+    
+    Returns:
+    ----------------------
+    subset_params : dict()
+        a dictionary of subsetting dictionaries: 
+        
+    '''
+    
+    # Read subset params
+    subset_params = pd.read_table('default_params.csv',delimiter='   ',engine='python')
+    subset_params = {sp:eval(subset_params.set_index('variable').loc[sp,'value']) for sp in subset_params['variable']}
+    
+    # Create slice'd subset params (with an extra list step in the 
+    # for-loop, since running `for sp in subset_params` throws 
+    # runtime errors for changing the size of the dictionary
+    for sp in [k for k in subset_params]:
+        subset_params[sp+'_slice'] = {dim:slice(*v) for dim,v in subset_params[sp].items()}
+    
+    # Return
+    return subset_params
 
 def get_varlist(source_dir=None,var=None,varsub='all',
                 experiment=None,freq=None,
@@ -332,7 +366,6 @@ def nan_argmin_xr(x,val=0,dim='month'):
     
     return out_vals
 
-
 def subset_to_srat(da,srat_mod = 'CHIRPS',
                    srat_file = None,
                    print_srat_fn = False,
@@ -388,6 +421,7 @@ def subset_to_srat(da,srat_mod = 'CHIRPS',
         defined by the `seas_ratio` variable / file used. 
     
     """
+    from funcs_load import load_raw
     
     dir_list = get_params()
         
@@ -395,17 +429,13 @@ def subset_to_srat(da,srat_mod = 'CHIRPS',
     if srat_file is not None:
         srat = xr.open_dataset(srat_file).seas_ratio
     else:
-        if srat_mod == 'CHIRPS':
-            srat_file = (dir_list['proc']+
-                                    'CHIRPS/pr_doyavg_CHIRPS_historical_seasstats_dunning_19810101-20221231_Africa.nc')
-            srat = (xr.open_dataset(srat_file).
-                     seas_ratio)
-        else:
-            srat_file = glob.glob(dir_list['proc']+srat_mod+'/pr_doyavg_'+srat_mod+'_*_seasstats*.nc')[0]
-            srat = xr.open_dataset(srat_file).seas_ratio
+        srat, fns_match = load_raw('pr_doyavg_*_seasstats_*HoA.nc',
+                                   search_dir=dir_list['proc']+srat_mod+'/',
+                                   return_filenames=True)
+        srat = srat.seas_ratio.drop('method')
             
     if print_srat_fn:
-        print('used '+srat_file+' as source for `seas_ratio` variable.')
+        print('used '+fns_match[0]+' as source for `seas_ratio` variable.')
             
     # Subset seas_ratio to desired location
     if subset_params is not None:

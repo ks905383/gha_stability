@@ -8,9 +8,11 @@ import string
 import glob
 import warnings
 from matplotlib import pyplot as plt
+from tqdm.notebook import tqdm
 import cmocean
 
-from funcs_plot import (figure_climatology,figure_iv_boxplots,figure_scatter,
+from funcs_plot import (figure_climatology,figure_climatology_panel,
+                        figure_iv_boxplots,figure_scatter,
                         figure_seasmaps,figure_seasmaps_multivar,
                         figure_pr_mse_trends,
                         wrapper_prhsat_figure)
@@ -26,6 +28,7 @@ def wrapper_figure3(var='hdiff',
                     subset_params = {'lat':slice(-3,12.5),'lon':slice(32,55)},
                     plev=650,
                     titles = ['Long rains','Short rains','Long - short rains'],
+                    stats_suffix=None,
                     save_fig = False,
                     output_fn = None):
 
@@ -39,7 +42,7 @@ def wrapper_figure3(var='hdiff',
     mod_a : str, by default 'MERRA2'
         which data product to use for variable `var`
         
-    mod_p : str, by defulat 'CHIRPS'
+    mod_p : str, by default 'CHIRPS'
         which data product to use for rainfall
         
     kind : str, by default 'dunning_local'
@@ -68,11 +71,9 @@ def wrapper_figure3(var='hdiff',
     #--------------- Setup ---------------
     # Piped into vardict in the figure functions
     vardict = {'hist':var,'cond':'pr'}
-    
-    stats_suffix='19810101-20211231_Africa'
 
     #--------------- Load data ---------------
-    # Load hdiff and P data
+    # Load var and P data
     if plev is not None:
         subset_params_var = {**subset_params,'plev':[plev]}
     dss = {var:load_raw(mod_a+'/'+var+'_day*_HoA.nc',search_dir=dir_list['proc'],
@@ -81,7 +82,7 @@ def wrapper_figure3(var='hdiff',
            'pr':load_raw(mod_p+'/pr_day*',subset_params=subset_params,
                          show_filenames=False)}
 
-    # Regrid hdiff to precip grid
+    # Regrid var to precip grid
     rgrd = xe.Regridder(dss[var],dss['pr'],method='bilinear')
     dss[var] = rgrd(dss[var])
 
@@ -101,7 +102,14 @@ def wrapper_figure3(var='hdiff',
     seasons = ['long_dry','long_rains','short_dry','short_rains']
     #-------- Load seasonal stats
     # Load seasonal stats
-    stats_fn = dir_list['proc']+mod_p+'/pr_ann_'+mod_p+'_historical_seasstats_dunning_'+stats_suffix+'.nc'
+    if stats_suffix is None:
+        stats_fn = glob.glob(dir_list['proc']+mod_p+'/pr_ann_'+mod_p+'_*_seasstats_*.nc')
+        if len(stats_fn) > 1:
+            raise NotUniqueFile('More than one possible stats file found to load:'+'\n'.join(stats_fn)+'\nTo specify a stats file, use the `stats_suffix` parameter.')
+        else:
+            stats_fn = stats_fn[0]
+    else:
+        stats_fn = dir_list['proc']+mod_p+'/pr_ann_'+mod_p+'_historical_seasstats_dunning_'+stats_suffix+'.nc'
     stats = xr.open_dataset(stats_fn)
     # NaN out areas outside double-peaked region
     stats = subset_to_srat(stats,drop=True)
@@ -113,46 +121,29 @@ def wrapper_figure3(var='hdiff',
     # Get timeframe of the stats ... 
     timeframe = pd.date_range(str(stats.year.min().values)+'-01-01',
                               str(stats.year.max().values)+'-12-31')
+    
+    # Subset data to stats range
+    dss = dss.sel(time=timeframe)
 
     if kind == 'dunning_local':
         #-------- Locally-defined seasons
-        bool_fn = ('/dx01/kschwarz/aux_data/seasidxs_day_'+mod_p+'_historical_'+
-                     re.sub('\-','',str(dss.time[0].values)[0:10])+'-'+
-                     re.sub('\-','',str(dss.time.max().values)[0:10])+'_HoA.nc')
+        bool_fn = (dir_list['proc']+mod_p+'/seasidxs_day_'+mod_p+'_historical_'+
+                     str(stats.year.min().values)+'0101-'+str(stats.year.max().values)+'1231_HoA.nc')
 
         if not os.path.exists(bool_fn):
-            ts = xr.zeros_like(dss.pr).expand_dims({'season':stats['season']})
-            yrs = dss.time.dt.year
-            doys = dss.time.dt.dayofyear
-
-            # Make sure ts lat/lon order matches up with stats lat/lon order
-            ts.transpose('season','time',*[dim for dim in stats.dims if dim in ['lat','lon']])
-            # Stack ts and stats
-            ts = ts.stack(loc=('lat','lon')).copy()
-            stats_tmp = stats.stack(loc=('lat','lon')).copy()
-
-            for yr in tqdm(stats_tmp.year):
-                yr_idx0 = np.where(yrs==yr)[0][0]
-                for seas_idx in np.arange(0,2):
-                    for loc_idx in np.where(~np.isnan(stats_tmp.isel(season=seas_idx).onset).all('year'))[0]:
-                        ts[seas_idx,int(yr_idx0+stats_tmp.sel(year=yr).isel(season=seas_idx,loc=loc_idx).onset.values):
-                           int(yr_idx0+stats_tmp.sel(year=yr).isel(season=seas_idx,loc=loc_idx).onset.values + 
-                               stats_tmp.sel(year=yr).isel(season=seas_idx,loc=loc_idx).duration.values),loc_idx] = True
-
-            ts = ts.unstack().copy()
-
-            ts = ts.rename({'hdiff':'idx'})
-            # Make sure it's an integer (maybe should've been bool?)
-            ts['idx'] = ts.idx.astype(int)
-
-            ts.attrs['SOURCE'] = 'wrapper_figure3()'
-            ts.attrs['DESCRIPTION'] = 'boolean for when a given grid-cell-day is in a given season'
-            ts.attrs['STATS_SOURCE'] = stats_fn
-            ts.to_netcdf(bool_fn)
-            print(bool_fn+' saved!')
+            raise FileNotFoundError(bool_fn+" not found; run 'calculate_seasmeans' using mod_p = "+mod_p+
+                                    " to generate it.")
         else:
-            print(bool_fn+' exists, loaded!')
-            ts = xr.open_dataset(bool_fn)
+            ts = xr.open_dataset(bool_fn).rename({'ts':'idx'})
+            
+        # Subset seasonal indices to just long, short rains
+        ts = ts.sel(season=['long_rains','short_rains'])
+            
+        # Subset data and seasonal booleans to same spatial extent
+        dss = xr.merge([dss,ts],join='inner')
+        ts = dss[['idx']]
+        dss = dss.drop('idx')
+        
     else:
         if kind == 'dunning':
             #-------- Regional average seasons
@@ -163,7 +154,7 @@ def wrapper_figure3(var='hdiff',
                                                         'season':seasons})
             
             # Calculate regional mean of the rainfall statistics 
-            statsm = area_mean(stats)
+            statsm = area_mean(stats).sel({'method':'dunning'},drop=True)
             ts = create_season_mask(ts,statsm).rename({'ts':'idx'})
 
         elif kind == 'month':
@@ -229,18 +220,19 @@ def wrapper_figure3(var='hdiff',
 
 def wrapper_figure4(mod_h='MERRA2',mod_p='CHIRPS',
                     suffix_h = 'HoA',
-                    suffix_p = '19810101-20220630',
+                    suffix_p = 'GHA',
                     subset_params = {'lat':slice(-3,12.5),
                                      'lon':slice(32,55)},
                     plev = 650,
                     use_surf = False,
                     save_fig = False,
-                    output_fn='',
-                    ylims = [[0,0.6],[0,6]],
+                    output_fn=None,
+                    ylims = [[0,0.7],[0,6]],
                     dir_list=dir_list):
     
     # Set output_fn
-    output_fn = dir_list['figs']+'figure4_'+mod_h
+    if output_fn is None:
+        output_fn = dir_list['figs']+'figure4_'+mod_h
     
     # Load unstable days boolean
     if use_surf:
@@ -288,7 +280,7 @@ def wrapper_figure4(mod_h='MERRA2',mod_p='CHIRPS',
         
 def wrapper_figure5(mod_h='MERRA2',mod_p='CHIRPS',
                     suffix_h = 'HoA',
-                    suffix_p = '19810101-20220630',
+                    suffix_p = 'GHA',
                     subset_params = {'lat':slice(-3,12.5),
                                      'lon':slice(32,55)},
                     use_surf = False,
@@ -324,10 +316,10 @@ def wrapper_figure5(mod_h='MERRA2',mod_p='CHIRPS',
                
     #----------- Load data -----------
     # Stats currently hardcoded, should also be outsourced to loading code
-    stats = xr.open_dataset('/dx01/kschwarz/climate_proc/CHIRPS/pr_doyavg_CHIRPS_historical_seasstats_dunning_19810101-20221231_Africa.nc')
-    stats = stats.isel(method=0)
+    stats = load_raw('pr_doyavg_*_seasstats_*HoA.nc',
+                      search_dir=dir_list['proc']+mod_p+'/')
     stats['demise'] = stats['onset'] + stats['duration']
-    stats = subset_to_srat(stats).mean(('lat','lon'))
+    stats = area_mean(subset_to_srat(stats))
     
     # Variables
     dss = dict()
@@ -404,7 +396,79 @@ def wrapper_figure5(mod_h='MERRA2',mod_p='CHIRPS',
         plt.tight_layout()
         utility_print(output_fn)
         
-def wrapper_figure6(mod='MERRA2',
+def wrapper_figure6(mod_a = 'MERRA2',
+                     mod_p = 'CHIRPS',
+                     plev = 650,
+                     kind = 'month',
+                     subset_params = {'lat':slice(-3,12.5),'lon':slice(32,55)},
+                     save_fig = False,
+                     output_fn = None):
+    
+    """ Wrapper for scatterplot panel 
+    
+    Note: by default, data is loaded and averaged over double-peaked 
+    region using `area_mean(subset_to_srat(load_raw(..))` 
+    
+    Parameters
+    -----------------
+    mod_a : str, by default 'MERRA2'
+        Data product for 'hdiff' and 'unstable' variables
+        
+    mod_p : str, by default 'CHIRPS'
+        Data product for 'pr' variable
+        
+    plev : float, by default 650
+        Presuure level for 'hdiff' and 'unstable' data
+        
+    kind : str, by default 'month'
+        Which seasonal definition to use, from: 
+            'month': MAM / OND
+            'month_alt': MAM / SON
+            'dunning': mean GHA seasonal extent
+            'dunning_local': local seasonal extent 
+        (see `calculates_seasmeans()` for details 
+        
+    subset_params : dict
+        Geographic subset of variables, used in `load_raw()`
+        
+    save_fig : bool, by default False
+    
+    output_fn : str, by default None
+    
+    """
+
+    # Load data
+    dss = xr.merge([area_mean(subset_to_srat(xr.merge([load_raw(var+'_seasavg*HoA.nc',search_dir=dir_list['proc']+mod_a+'/',
+                                                 subset_params = {**subset_params,'plev':[plev]}) for var in ['hdiff','unstable']]))).drop('plev'),
+                     area_mean(subset_to_srat(load_raw('pr_seasavg*HoA.nc',search_dir=dir_list['proc']+mod_p+'/',
+                                                        subset_params = subset_params).drop(['lat_bounds','lon_bounds'],errors='ignore'),
+                                              srat_mod='CHIRPS'))])
+    dss['hdiff'] = dss['hdiff']/1000
+
+    # Plot
+    fig,ax = figure_scatter(dss.sel(kind=kind),
+                            xlims = [[-7,0],[0,0.5]],
+                            ylims = [0,5.5],show_corrs = False,
+                            seas_names = {'long_rains':'MAM',
+                                          'short_rains':'OND'},
+                            year_subsets = {'long_rains':[2017,2018]},
+                            y_label_str = r'$\overline{P}$ [mm/day]',
+                            x_label_strs = [r'$\overline{(h_s-h^*)}$ [kJ/kg]',
+                                            r'$\overline{(frac.\ unstable)}$'],
+                            save_fig = save_fig,
+                            output_fn = output_fn)
+    
+def wrapper_figure7(save_fig=False,output_fn=''):
+    """ Panel of T components Figure """
+    
+    plot_vars = ['rlus','rsdt','rsns','nadvTday','cllow','hfls']
+    figure_climatology_panel(plot_vars,
+                             KtoC = True,
+                             add_equinox = True,
+                             save_fig = save_fig,
+                             output_fn = output_fn)
+        
+def wrapper_figure8(mod='MERRA2',
                     suffix = 'HoA',
                     subset_params = {'lat':slice(-3,12.5),
                                      'lon':slice(32,55)},
@@ -463,9 +527,11 @@ def wrapper_figure6(mod='MERRA2',
         plt.tight_layout()
         utility_print(output_fn)
 
-def wrapper_figure7(mod_a = 'MERRA2',mod_o = 'OISST',
-                save_fig=False,output_fn='../figures/figure7'):
-    """ Wrapper for Figure 7
+def wrapper_figure9(mod_a = 'MERRA2',mod_o = 'OISST',mod_p = 'CHIRPS',
+                    kind = 'dunning',plev=650,
+                    stats_suffix = '19810101-20221231_HoA',
+                    save_fig=False,output_fn='../figures/figure9'):
+    """ Wrapper for Figure 9
     
     Parameters
     -------------
@@ -475,6 +541,20 @@ def wrapper_figure7(mod_a = 'MERRA2',mod_o = 'OISST',
     mod_o : str, by default 'OISST'
         which data product to load for SSTs
         
+    kind : str, by default 'dunning'
+        which seasonal definition to use
+            'dunning': average onset/demise over double-peaked region
+            'month': JF / MAM / JJAS / OND
+            'month_alt': DJF / MAM / JJA / SON 
+            
+    plev : float, by defualt 650
+        pressure level to use for h* in the `h_s-h*` shading
+        
+    stats_suffix : None or str, by default 'HoA'
+        suffix for the seasonal stats file to use to define the 
+        double-peaked region on the map (if None,
+        will look for one in `dir_list['raw']+mod_p+'/')
+        
     save_fig : bool, by default False
     
     output_fn : str, by default None
@@ -483,29 +563,22 @@ def wrapper_figure7(mod_a = 'MERRA2',mod_o = 'OISST',
     
     #---------- Load data ----------
     # Levels variables
-    ds = xr.merge([xr.concat([(xr.open_dataset(dir_list['proc']+mod_a+'/'+
-                            var+'-nsurf_seasavg_MERRA2_historical_reanalysis_1981-2021_eq-IO.nc').
-                             sel(lat=slice(-15,14.9))),
-                          (xr.open_dataset(dir_list['proc']+mod_a+'/'+
-                            var+'-nsurf_seasavg_MERRA2_historical_reanalysis_1981-2021_subtrop-AfrSAsia.nc').
-                             sel(lon=slice(31.5,110)))
-                         ],dim='lat') for var in ['uq','vq','ua','va']])
+    ds = xr.merge([xr.concat([xr.open_dataset(dir_list['proc']+mod_a+'/'+
+                                              var+'_seasavg_MERRA2_historical_reanalysis_19810101-20211231_'+suffix+'.nc')
+                              for suffix in ['eq-IO','subtrop-AfrSAsia']
+                             ],dim='lat').sel(kind=kind,drop=True).drop('plev') 
+                  for var in ['uq-nsurf','vq-nsurf','ua-nsurf','va-nsurf']])
 
     # Anom variables, on pressure levels
-    plev = 650
     ds = xr.merge([ds,
-               *[xr.concat([(xr.open_dataset(dir_list['proc']+mod_a+'/'+
-                            var+'-anom_seasavg_MERRA2_historical_reanalysis_1981-2021_eq-IO.nc').
-                             sel(lat=slice(-15,14.9),plev=plev)),
-                          (xr.open_dataset(dir_list['proc']+mod_a+'/'+
-                            var+'-anom_seasavg_MERRA2_historical_reanalysis_1981-2021_subtrop-AfrSAsia.nc').
-                             sel(lon=slice(31.5,110),plev=plev))
-                         ],dim='lat').drop('plev') for var in ['hdiff']]])
+                   xr.concat([xr.open_dataset(dir_list['proc']+mod_a+'/'+
+                                            'hdiff-anom_seasavg_MERRA2_historical_reanalysis_19810101-20211231_'+suffix+'.nc')
+                              for suffix in ['eq-IO','subtrop-AfrSAsia']
+                             ],dim='lat').sel(plev=plev,kind=kind,drop=True)])
 
     # SST data
-    dso = xr.concat([xr.open_dataset(dir_list['proc']+mod_o+'/tos_seasavg_OISST_historical_avhrr_1981-2021_'+suffix+'.nc')
-                     for suffix in ['WIndOcean','EIndOcean']],dim='lon')
-    dso = dso.sel(lon=slice(31.5,110))
+    dso = xr.open_dataset(dir_list['proc']+mod_o+'/tos_seasavg_OISST_historical_avhrr_19810901-20211231_NCIndOcean.nc')
+    dso = dso.sel(lon=slice(31.5,110),kind=kind,drop=True)
 
     
     with warnings.catch_warnings():
@@ -521,13 +594,20 @@ def wrapper_figure7(mod_a = 'MERRA2',mod_o = 'OISST',
         # sure the contourf plot works without overlaps
         ds['tos'] = mask_rgrd(dso.sst)
         ds['tos'] = ds['tos'].where(ds['tos']!=0)
-
-    # Load full stats file (to get bimodal pixels)
-    bimod = xr.open_dataset(dir_list['proc']+'CHIRPS/pr_doyavg_CHIRPS_historical_seasstats_dunning_19810101-20141231_HoAfrica.nc')
-    bimod = bimod.seas_ratio
+        
+    # Load seasonal stats
+    if stats_suffix is None:
+        stats_fn = glob.glob(dir_list['proc']+mod_p+'/pr_doyavg_'+mod_p+'_*_seasstats_*.nc')
+        if len(stats_fn) > 1:
+            raise NotUniqueFile('More than one possible stats file found to load:'+'\n'.join(stats_fn)+'\nTo specify a stats file, use the `stats_suffix` parameter.')
+        else:
+            stats_fn = stats_fn[0]
+    else:
+        stats_fn = dir_list['proc']+mod_p+'/pr_doyavg_'+mod_p+'_historical_seasstats_dunning_'+stats_suffix+'.nc'
+    stats = xr.open_dataset(stats_fn)
 
     #---------- Plot ----------
-    figure_seasmaps_multivar(ds,bimod=bimod,
+    figure_seasmaps_multivar(ds,bimod=stats.seas_ratio,
                               fill_vars = {'hdiff':{'type':'all',
                                                     'params':{'vmin':-15,'vmax':15,'levels':15,'cmap':cmocean.cm.balance_r},
                                                     'label':r'$h_s-h^*$ anomalies [kJ/kg]',
@@ -545,12 +625,12 @@ def wrapper_figure7(mod_a = 'MERRA2',mod_o = 'OISST',
                               output_fn=output_fn)
 
     
-def wrapper_figure89(mod='MERRA2',var = 'hsat',
+def wrapper_figure1011(mod='MERRA2',var = 'hsat',
                      clabels = {'hsat':r' $h^*$ anomaly [kJ/kg]','h-nsurf':r' $h_s$ anomaly [kJ/kg]'},
                      titles = {'hsat':r'650 hPa $h^*$','h-nsurf':r'Surface $h$'},
                      cmap_params = None,
                      save_fig=False,output_fn=None):
-    """ Wrapper for Figures 8, 9 
+    """ Wrapper for Figures 10, 11 
     
     Parameters
     -------------
@@ -622,70 +702,9 @@ def wrapper_figure89(mod='MERRA2',var = 'hsat',
                     clabel=clabels[var],title=titles[var],
                     levels=21,title_suffix=r' and $\vec{u}$ anomalies')
     
-def wrapper_figure10(mod_a = 'MERRA2',
-                     mod_p = 'CHIRPS',
-                     plev = 650,
-                     kind = 'month',
-                     subset_params = {'lat':slice(-3,12.5),'lon':slice(32,55)},
-                     save_fig = False,
-                     output_fn = None):
-    
-    """ Wrapper for scatterplot panel 
-    
-    Note: by default, data is loaded and averaged over double-peaked 
-    region using `area_mean(subset_to_srat(load_raw(..))` 
-    
-    Parameters
-    -----------------
-    mod_a : str, by default 'MERRA2'
-        Data product for 'hdiff' and 'unstable' variables
-        
-    mod_p : str, by default 'CHIRPS'
-        Data product for 'pr' variable
-        
-    plev : float, by default 650
-        Presuure level for 'hdiff' and 'unstable' data
-        
-    kind : str, by default 'month'
-        Which seasonal definition to use, from: 
-            'month': MAM / OND
-            'month_alt': MAM / SON
-            'dunning': mean GHA seasonal extent
-            'dunning_local': local seasonal extent 
-        (see `calculates_seasmeans()` for details 
-        
-    subset_params : dict
-        Geographic subset of variables, used in `load_raw()`
-        
-    save_fig : bool, by default False
-    
-    output_fn : str, by default None
-    
-    """
-
-    # Load data
-    dss = xr.merge([area_mean(subset_to_srat(xr.merge([load_raw(var+'_seasavg*HoA.nc',search_dir=dir_list['proc']+mod_a+'/',
-                                                 subset_params = {**subset_params,'plev':[plev]}) for var in ['hdiff','unstable']]))).drop('plev'),
-                     area_mean(subset_to_srat(load_raw('pr_seasavg*-202*Africa.nc',search_dir=dir_list['proc']+mod_p+'/',
-                                                        subset_params = subset_params).drop(['lat_bounds','lon_bounds'],errors='ignore'),
-                                              srat_mod='CHIRPS'))])
-    dss['hdiff'] = dss['hdiff']/1000
-
-    # Plot
-    fig,ax = figure_scatter(dss.sel(kind=kind),
-                            xlims = [[-7,0],[0,0.45]],
-                            ylims = [0,5],show_corrs = False,
-                            seas_names = {'long_rains':'MAM',
-                                          'short_rains':'OND'},
-                            year_subsets = {'long_rains':[2017,2018]},
-                            y_label_str = r'$\overline{P}$ [mm/day]',
-                            x_label_strs = [r'$\overline{(h_s-h^*)}$ [kJ/kg]',
-                                            r'$\overline{(frac.\ unstable)}$'],
-                            save_fig = save_fig,
-                            output_fn = output_fn)
     
     
-def wrapper_figure11(mod_a = 'MERRA2',
+def wrapper_figure12(mod_a = 'MERRA2',
                      mod_p = 'CHIRPS',
                      plev = 650,
                      kind = 'month',
@@ -728,7 +747,7 @@ def wrapper_figure11(mod_a = 'MERRA2',
     # Load data
     dss = xr.merge([area_mean(subset_to_srat(xr.merge([load_raw(var+'_seasavg*HoA.nc',search_dir=dir_list['proc']+mod_a+'/',
                                                  subset_params = {**subset_params,'plev':[plev]}) for var in ['hdiff','unstable']]))).drop('plev'),
-                     area_mean(subset_to_srat(load_raw('pr_seasavg*-202*Africa.nc',search_dir=dir_list['proc']+mod_p+'/',
+                     area_mean(subset_to_srat(load_raw('pr_seasavg*HoA.nc',search_dir=dir_list['proc']+mod_p+'/',
                                                         subset_params = subset_params).drop(['lat_bounds','lon_bounds'],errors='ignore'),
                                               srat_mod='CHIRPS'))])
     # Convert from J/kg to kJ/kg 
@@ -737,7 +756,7 @@ def wrapper_figure11(mod_a = 'MERRA2',
     # Plot
     fig,ax = figure_scatter(dss.sel(kind=kind),
                             plot_type = 'changes',
-                            xlims = [[-5,5],[-0.3,0.3]],
+                            xlims = [[-5,5],[-0.35,0.35]],
                             ylims = [-5,5],
                             year_subsets = {'long_rains':[[2017,2017,'tab:red']]},
                             seas_names = {'long_rains':'MAM',
@@ -749,8 +768,10 @@ def wrapper_figure11(mod_a = 'MERRA2',
                             save_fig=save_fig,
                             output_fn = output_fn)
     
-def wrapper_figure12(mod_a = 'MERRA2',
+def wrapper_figure13(mod_a = 'MERRA2',
                      mod_p = 'CHIRPS',
+                     suffix_a = 'HoA',
+                     suffix_p = 'HoA',
                      seas_idx = 1, 
                      yrs = [[2017],[2018]],
                      plev = 650,
@@ -781,7 +802,7 @@ def wrapper_figure12(mod_a = 'MERRA2',
                                                      if not re.search('(\-nsurf)|(pr)',var)}}).drop(['plev'],errors='ignore')
           for var,mod,suffix in zip(['hdiff','hsat','h-nsurf','ta-nsurf','hus-nsurf','pr'],
                                     [*[mod_a]*5,mod_p],
-                                    [*['HoA']*5,'19810101-20211231_Africa'])}
+                                    [*[suffix_a]*5,suffix_p])}
 
     # Regrid MSE variables to precip grid
     rgrd = xe.Regridder(dss['hdiff'],dss['pr'],method='bilinear')
