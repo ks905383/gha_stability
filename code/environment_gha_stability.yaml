@@ -1,0 +1,28 @@
+name: gha_stability
+channels:
+  - conda-forge
+dependencies:
+  # Data processing
+  - xarray
+  - cf_xarray
+  - numpy
+  - pandas
+  - cftime
+  - xesmf=0.7.1 # to avoid ESMF problems
+  - xagg
+  - scipy
+  - xskillscore
+
+  # Plotting
+  - matplotlib
+  - cmocean
+  - cartopy
+  - seaborn
+  - shapely
+  - geopandas
+  - regionmask
+
+  # Aux
+  - jupyterlab
+  - tqdm
+
