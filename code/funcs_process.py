@@ -196,6 +196,7 @@ def calculate_h(freq = 'day',
 
 def subset_files(mod,subset,source_dir,output_dir,
                  var_list = None,
+                 skip_list = None,
                  freq='day',dir_list = dir_list,
                  overwrite=False):
     """ Subsets all files of a model in a particular directory, 
@@ -251,6 +252,11 @@ def subset_files(mod,subset,source_dir,output_dir,
     if type(var_list) == list:
         search_str = dir_list[source_dir]+mod+'/'+'('+'\_)|('.join(var_list)+'\_)'+freq+'\_'+mod+'.*\.nc'
         file_list = [fn for fn in file_list if re.search(search_str,fn)]
+        
+    # Remove files if desired
+    if type(skip_list) == list:
+        for sl in skip_list:
+            file_list = [fn for fn in file_list if re.search(sl,fn) is None]
         
     if len(file_list) == 0:
         if type(var_list) == list:
@@ -750,6 +756,7 @@ def calculate_resampled(var = 'hdiff',resample = {'time':'1D'},
                         func = 'max',
                         func_str = None,
                         search_str = '*.nc',
+                        source_dir = 'proc',
                         use_surf=False,
                         dir_list = dir_list,overwrite=False,
                         save=True,return_ds=False):
@@ -825,18 +832,24 @@ def calculate_resampled(var = 'hdiff',resample = {'time':'1D'},
     
     """
     # Get list of files to process
-    search_str = dir_list['proc']+mod+'/'+var+'_'+freq+'_'+mod+search_str
+    search_str = dir_list[source_dir]+mod+'/'+var+'_'+freq+'_'+mod+search_str
     fns = glob.glob(search_str)
     
     if len(fns) == 0:
         warnings.warn('No files found for search: '+search_str)
+        
+    if (func_str is None):
+        if (type(func) == str):
+            func_str = func
+        else:
+            raise Error("Need `func_str` to set output filename (will be put into the form '[var][func_str]_[output_freq]_[mod]_....nc'")
     
     # Process by file 
     for fn in fns: 
         # Get filename to save, replacing [var] with, e.g., [var]max
         # and the frequency with the output frequency
-        output_fn = re.sub(var+'\_',var+func_str,
-                           re.sub('\_'+freq+'\_','\_'+output_freq+'\_',fn))
+        output_fn = re.sub(var+'\_',var+func_str+'_',
+                           re.sub('\_'+freq+'\_','_'+output_freq+'_',fn))
         
         if overwrite or (not os.path.exists(output_fn)):
             ds = xr.open_dataset(fn)
@@ -852,8 +865,8 @@ def calculate_resampled(var = 'hdiff',resample = {'time':'1D'},
                 ds_out = ds.resample(resample).apply(func)
             
             if save: 
-                ds.attrs['SOURCE'] = 'calculate_resampled() from funcs_process.py'
-                ds.attrs['DESCRIPTION'] = 'resampled from '+freq+' to '+output_freq+' using the function '+str(func)
+                ds_out.attrs['SOURCE'] = 'calculate_resampled() from funcs_process.py'
+                ds_out.attrs['DESCRIPTION'] = 'resampled from '+freq+' to '+output_freq+' using the function '+str(func)
 
                 if os.path.exists(output_fn):
                     os.remove(output_fn)
@@ -863,15 +876,15 @@ def calculate_resampled(var = 'hdiff',resample = {'time':'1D'},
                     os.mkdir(os.path.dirname(output_fn))
                     print(os.path.dirname(output_fn)+'/ created!')
 
-                ds.to_netcdf(output_fn)
+                ds_out.to_netcdf(output_fn)
                 print(output_fn+' saved!')
             
             if return_ds:
-                return ds
+                return ds_out
         else:
             if return_ds:
-                ds = xr.open_dataset(output_fn)
-                return ds
+                ds_out = xr.open_dataset(output_fn)
+                return ds_out
             else:
                 print(output_fn+' already exists!')
             
@@ -1291,7 +1304,8 @@ def calculate_seasmeans(dir_list = dir_list,
                         warnings.simplefilter("ignore") 
                         tss['dunning_local'] = rgrd(tss['dunning_local'])
                     tss['dunning_local'] = np.round(tss['dunning_local'])
-                    # Get NaNs from original stats file mask (regridded)
+                    # Make sure NaNs stay NaNs (by setting pixels that were never
+                    # assigned to a season to NaN) - xesmf sets them to 0 otherwise
                     tss['dunning_local'] = tss['dunning_local'].where((tss['dunning_local'].isel(season=0).mean('time')!=0).ts)
                     # Change nans to False
                     tss['dunning_local'] = tss['dunning_local'].where(~np.isnan(tss['dunning_local']),False)

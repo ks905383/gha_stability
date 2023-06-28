@@ -297,7 +297,8 @@ def figure_climatology_panel(plot_vars,
                              add_equinox = False,
                              add_season_shading = True,
                              save_fig = False,
-                             output_fn = ''):
+                             output_fn = '',
+                             return_handles=False):
     """ Plot a panel of climatology figures for multiple variables
     
     Parameters
@@ -351,11 +352,15 @@ def figure_climatology_panel(plot_vars,
     
     output_fn : str, by default None 
     
+    return_handles : bool, by default False
+        If True, then returns fig,axs
+    
     """
 
     if labels is None:
         labels = {'rsdt':r'TOA down shortwave [W/m$^2$]',
                   'rsns':r'Surface net shortwave [W/m$^2$]',
+                  'rsds':r'Surface down shortwave [W/m$^2$]',
                   'rlus':r'Surface up longwave [W/m$^2$]',
                   'rlns':r'Surface net longwave [W/m$^2$]',
                   'rlds':r'Surface down longwave [W/m$^2$]',
@@ -373,7 +378,9 @@ def figure_climatology_panel(plot_vars,
                   'pr':r'$P$ [mm/day]',
                   'hdiff':r'$h_s-h^*$ [kJ/kg]',
                   'hsat':r'$h^*$ [kJ/kg]',
-                  'h':r'$h$ [kJ/kg]'}
+                  'h':r'$h$ [kJ/kg]',
+                  'sst_coast':'Coastal SSTs [K]',
+                  'sst_wio':'W. Indian Ocean SSTs [K]'}
 
     #------------- Load data -------------
     # Load variables to plot
@@ -388,8 +395,14 @@ def figure_climatology_panel(plot_vars,
 
 
         # Determine which directories the variables are in 
-        load_dirs = [('raw' if len(glob.glob(dir_list['raw']+mod+'/'+v+'_'+freq+'_*'+suffix+'.nc'))>0 else 'proc')
+        load_dirs = [('raw' if len(glob.glob(dir_list['raw']+mod+'/'+v+'_'+freq+'_*'+suffix+'.nc'))>0 
+                            else 'proc' if len(glob.glob(dir_list['proc']+mod+'/'+v+'_'+freq+'_*'+suffix+'.nc'))>0
+                            else None)
                      for v in load_vars]
+        
+        if np.any([d is None for d in load_dirs]):
+            raise FileNotFoundError('Variables '+', '.join([v for v,d in zip(load_vars,load_dirs) if d is None])+
+                                    ' not found in "raw" or "proc" dirs for model '+mod+'.')
 
         # Get unique load variables, to not double-load anything
         unique_idxs = np.unique(load_vars,return_index=True)    
@@ -466,9 +479,10 @@ def figure_climatology_panel(plot_vars,
 
     #------------- Plot -------------
     fig = plt.figure(figsize=(10,((len(plot_vars)+1)//2)*4))
-
+    axs = [None]*len(plot_vars)
+    
     for var,plt_idx in zip(plot_vars,np.arange(0,len(plot_vars))): #rsds
-        ax = plt.subplot(len(plot_vars) // 2,2,plt_idx + 1)
+        axs[plt_idx] = plt.subplot(len(plot_vars) // 2,2,plt_idx + 1)
 
         # Set data to plot
         if comp_var is not None:
@@ -497,8 +511,8 @@ def figure_climatology_panel(plot_vars,
 
 
         # Plot climatology
-        fig,ax=figure_climatology(plot_data,
-                           ax=ax,fig=fig,
+        fig,axs[plt_idx]=figure_climatology(plot_data,
+                           ax=axs[plt_idx],fig=fig,
                            show_legend=False,
                            plot_axes='diff',
                            colors=['tab:blue','tab:red'],
@@ -507,18 +521,18 @@ def figure_climatology_panel(plot_vars,
                            axv_shading_color='tan',)
 
         # Set title
-        ax[0].set_title(labels[var],color='tab:blue')
+        axs[plt_idx][0].set_title(labels[var],color='tab:blue')
 
         # Add equinox lines, if desired
         if add_equinox:
             for d in [79,266]:
-                ax[0].axvline(d,color='grey',linewidth=0.5)
+                axs[plt_idx][0].axvline(d,color='grey',linewidth=0.5)
                 if plt_idx == 0:
-                    ax[0].annotate('equinox',(d,ax[0].get_ylim()[0]+1),va='bottom',ha='right',color='grey',
+                    axs[plt_idx][0].annotate('equinox',(d,axs[plt_idx][0].get_ylim()[0]+1),va='bottom',ha='right',color='grey',
                                  xycoords='data',rotation=90)  
 
         # Subplot lettering
-        ax[0].annotate(string.ascii_lowercase[plt_idx]+'.',
+        axs[plt_idx][0].annotate(string.ascii_lowercase[plt_idx]+'.',
                         [0.01,1.01],xycoords='axes fraction',
                         va='bottom',ha='left',fontsize=13,fontweight='bold')
 
@@ -529,6 +543,9 @@ def figure_climatology_panel(plot_vars,
     if save_fig:
         utility_print(output_fn)
         
+    #------------- Return -------------
+    if return_handles:
+        return fig,axs
         
         
 def figure_iv_boxplots(plot_data,
@@ -633,7 +650,7 @@ def figure_seasmaps(plot_data,bimod=None,subset=None,
                     vmin=276,vmax=282,levels=None,
                     quiver_data=None,qscale=1,
                     arrow_props = {'headwidth':2,'headlength':8,'minlength':0.25},
-                    extra_seasnames = ['Jilaal','Gu','Hhagaa','Deyr'],
+                    extra_seasnames = ['Jilaal','Gu','Xagaa','Deyr'],
                     cmap = cmocean.cm.thermal,bimod_color='white',
                     clabel = r'T [K]',title=None,title_suffix='',seas_label_x = -0.04,
                     figsize=(18,10),
@@ -1418,7 +1435,12 @@ def figure_hdiff_hists(dss,ts_idxs,
             
         # Add percent of unstable grid cell days    
         if show_pos_pct and (plt_idx < 2):
-            ax.annotate(str(int(np.round(np.sum(plot_data[plt_idx][plot_bins>0])*100)))+'%',
+            frac_value = np.sum(plot_data[plt_idx][plot_bins>0])
+            #frac_value = np.sum((stab_tmp[plt_idx]>0)*hist_kwargs[plt_idx]['weights'])/np.sum(hist_kwargs[plt_idx]['weights'])
+            #frac_value = frac_value / (np.sum((~np.isnan(stab_tmp[plt_idx]))*hist_kwargs[plt_idx]['weights'])/
+            #                           np.sum(hist_kwargs[plt_idx]['weights']))
+            
+            ax.annotate(str(int(np.round(frac_value*100)))+'%',
                         [0.98,0.98],xycoords='axes fraction',ha='right',va='top')
             
         if show_legend and (plt_idx == 0):
@@ -1588,7 +1610,7 @@ def figure_hdiff_boxplots(dss,ts_idxs,
             ax.legend()
     
     
-def wrapper_prhsat_figure(dss,ts_idxs,
+def wrapper_prhdiff_figure(dss,ts_idxs,
                           vardict = {'hist':'hdiff','cond':'pr'},
                           save_fig=False,
                           output_fn=None,
@@ -1840,7 +1862,8 @@ def figure_pr_mse_trends(dsy,seas_idx=0,mean_kind='month',yrs=[1998,2008],
 
 
     # Colorbar
-    cax = fig.add_axes([0.25,0.085,0.5,0.03])
+    fig.subplots_adjust(bottom=0.125)
+    cax = fig.add_axes([0.25,0.08,0.5,0.03])
     levels = mpl.ticker.MaxNLocator(nbins=clims['mse']['levels']).tick_values(clims['mse']['vmin'],clims['mse']['vmax'])
     norm = mpl.colors.BoundaryNorm(levels, ncolors=cmaps['mse'].N, clip=True)
     sm = plt.cm.ScalarMappable(cmap=cmaps['mse'],norm=norm)

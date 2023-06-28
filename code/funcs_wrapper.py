@@ -15,12 +15,13 @@ from funcs_plot import (figure_climatology,figure_climatology_panel,
                         figure_iv_boxplots,figure_scatter,
                         figure_seasmaps,figure_seasmaps_multivar,
                         figure_pr_mse_trends,
-                        wrapper_prhsat_figure)
-from funcs_support import (get_params,subset_to_srat,utility_print,area_mean)
+                        wrapper_prhdiff_figure)
+from funcs_support import (get_params,get_subset_params,subset_to_srat,utility_print,area_mean)
 from funcs_process import (create_season_mask)
 from funcs_load import (load_raw)
 
 dir_list = get_params()
+subset_params_all = get_subset_params()
 
 def wrapper_figure3(var='hdiff',
                     mod_a='MERRA2',mod_p='CHIRPS',
@@ -211,7 +212,7 @@ def wrapper_figure3(var='hdiff',
     else:
         xlabel_add = ''
     
-    wrapper_prhsat_figure(dss,ts.idx,
+    wrapper_prhdiff_figure(dss,ts.idx,
                           xlabel_add = xlabel_add,
                           titles = titles,
                           save_fig = save_fig,
@@ -458,15 +459,82 @@ def wrapper_figure6(mod_a = 'MERRA2',
                             save_fig = save_fig,
                             output_fn = output_fn)
     
-def wrapper_figure7(save_fig=False,output_fn=''):
-    """ Panel of T components Figure """
+def wrapper_figure7(save_fig=False,output_fn='',
+                    mod_a = 'MERRA2',mod_o = 'OISST',
+                    plot_vars = ['rlus','rsdt','rsns','nadvTday','cllow','hfls','hfss']):
+    """ Panel of T components Figure     
+    """
+    # `figure_climatology_panel()` is set up to only accept data from one data 
+    # product; since the final main text figure includes both atmospheric 
+    # (reanalysis) and ocean (OISST) data, the wrapper function needs to 
+    # load the data instead of `figure_climatology_panel()`. Consequently, 
+    # most of this is adapted from the loading section of that function.)
     
-    plot_vars = ['rlus','rsdt','rsns','nadvTday','cllow','hfls']
-    figure_climatology_panel(plot_vars,
-                             KtoC = True,
-                             add_equinox = True,
-                             save_fig = save_fig,
-                             output_fn = output_fn)
+    comp_var = 'ta-nsurf'; suffix = 'HoA'; freq = 'day'
+    
+    #---------- Load atmopsheric variables ----------
+    
+    # Determine which variables need to be loaded (tas for advection variables)
+    load_vars = [['ta-nsurf','ua-nsurf','va-nsurf'] if re.search('advT',v) else [v] for v in plot_vars]
+    # Flatten
+    load_vars = [l0 for l1 in load_vars for l0 in l1]
+    # Add variable to plot in every subplot
+    if comp_var is not None:
+        load_vars = [comp_var,*load_vars]
+
+
+    # Determine which directories the variables are in 
+    load_dirs = [('raw' if len(glob.glob(dir_list['raw']+mod_a+'/'+v+'_'+freq+'_*'+suffix+'.nc'))>0 
+                        else 'proc' if len(glob.glob(dir_list['proc']+mod_a+'/'+v+'_'+freq+'_*'+suffix+'.nc'))>0
+                        else None)
+                 for v in load_vars]
+
+    if np.any([d is None for d in load_dirs]):
+        raise FileNotFoundError('Variables '+', '.join([v for v,d in zip(load_vars,load_dirs) if d is None])+
+                                ' not found in "raw" or "proc" dirs for model '+mod_a+'.')
+
+    # Get unique load variables, to not double-load anything
+    unique_idxs = np.unique(load_vars,return_index=True)    
+    load_dirs = list(np.array(load_dirs)[unique_idxs[1]])
+    load_vars = list(unique_idxs[0])
+
+    # Load 
+    ds = xr.merge([load_raw(v+'_'+freq+'_*'+suffix+'.nc',
+                            search_dir = dir_list[d]+mod_a+'/') for v,d in zip(load_vars,load_dirs)])
+    
+    #---------- Load SSTs variables ----------
+    dso = load_raw('tos_*',search_dir=dir_list['raw']+mod_o+'/')
+
+    # Calculate HoA East Coast Average SSTs
+    coast_idxs = (~np.isnan(dso.isel(time=0))).sst.idxmax(dim='lon')
+    ds['sst_coast'] = dso.sel(lat=slice(-3,10)).where(dso.lon==coast_idxs).mean(('lat','lon')).sst
+    # Calculate western IO Average SSTs
+    ds['sst_wio'] = area_mean(dso.sel(lon=slice(32,55),lat=slice(-3,10))).sst
+    
+    #---------- Plot ----------
+    fig,axs = figure_climatology_panel([*plot_vars,'sst_coast'],
+                                         ds = ds,
+                                         KtoC = True,
+                                         add_equinox = True,
+                                         save_fig = False,
+                                         output_fn = output_fn,
+                                       return_handles = True)
+    
+    import matplotlib as mpl
+    # Add Western IO as a dashed line
+    axs[-1][0].plot(ds['sst_wio'].groupby('time.dayofyear').mean(),
+                color='tab:blue',linestyle='--')
+    
+    # Adjust accordingly
+    axs[-1][0].set_title('SSTs')
+
+    axs[-1][0].legend([mpl.lines.Line2D([0], [0], color='tab:blue', linestyle='-'),
+                    mpl.lines.Line2D([0], [0], color='tab:blue', linestyle='--')],
+                      ['GHA Coast','W. Ind. Ocean'])
+    
+    #---------- Save ----------
+    if save_fig:
+        utility_print(output_fn)
         
 def wrapper_figure8(mod='MERRA2',
                     suffix = 'HoA',
@@ -626,6 +694,8 @@ def wrapper_figure9(mod_a = 'MERRA2',mod_o = 'OISST',mod_p = 'CHIRPS',
 
     
 def wrapper_figure1011(mod='MERRA2',var = 'hsat',
+                       mod_p = 'CHIRPS',
+                       kind = 'dunning',
                      clabels = {'hsat':r' $h^*$ anomaly [kJ/kg]','h-nsurf':r' $h_s$ anomaly [kJ/kg]'},
                      titles = {'hsat':r'650 hPa $h^*$','h-nsurf':r'Surface $h$'},
                      cmap_params = None,
@@ -638,7 +708,16 @@ def wrapper_figure1011(mod='MERRA2',var = 'hsat',
         which data product to load
         
     var : str, by default 'hsat'
-        use 'h-nsurf' for Figure 8, 'hsat' for Figure 9
+        use 'h-nsurf' for Figure 10, 'hsat' for Figure 11
+        
+    mod_p : str, by default 'CHIRPS'
+        which obs product's seasonal statistics to use
+        
+    kind : str, by default 'dunning'
+        which seasonal averaging to use, by default "dunning"
+        (using average onset / demise across the whole 
+        double-peaked region. "month" will use MAM/OND, 
+        and "month_alt" MAM/SON.")
         
     clabels : dict
         colorbar label; requires at least an entry `var` 
@@ -678,18 +757,17 @@ def wrapper_figure1011(mod='MERRA2',var = 'hsat',
         var_list = [var,'ua','va'] 
 
     
-    dss = {var:load_raw(var+'-anom_'+freq+'*19810101*.nc',
+    dss = {var:load_raw(var+'-anom_'+freq+'*eq*.nc',
                      search_dir=dir_list['proc']+mod+'/',
-                     subset_params = subset_params_tmp,
+                     subset_params = {'kind':[kind],**subset_params_tmp},
                     show_filenames=False,
                     fn_ignore_regexs = 'HoA')
       for var in var_list}
 
     dss = xr.merge([v.drop_duplicates('lon') for k,v in dss.items()])
-    dss = dss.sel(kind='dunning')
     
     # Load full stats file (to get bimodal pixels)
-    bimod = xr.open_dataset(dir_list['proc']+'CHIRPS/pr_doyavg_CHIRPS_historical_seasstats_dunning_19810101-20141231_HoAfrica.nc')
+    bimod = load_raw('pr_doyavg*_HoA.nc',search_dir = dir_list['proc']+mod_p+'/')
     bimod = bimod.seas_ratio
     
     #---------- Plot ----------

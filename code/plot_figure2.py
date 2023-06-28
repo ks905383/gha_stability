@@ -34,6 +34,12 @@ ds = load_raw('pr_day_*_GHA.nc',dir_list['raw']+'CHIRPS/')
 stats = stats.sel(**subset_params)
 ds = ds.sel(**subset_params)
 
+# Load using ds.mean(), since the code sometimes gets stuck
+# on the day-of-year averaging below if it's not loaded
+# (and for some reason, ds.mean() often loads it faster than
+# ds.load())
+ds.mean('time')
+
 # Make dayofyear average
 ds = ds.groupby('time.dayofyear').mean()
 
@@ -118,8 +124,8 @@ ax = fig.add_subplot(spec[1,0])
 # Get rid of x axis labels
 ax.set_xlabel('')
 ax.tick_params(axis='x',bottom=False,labelbottom=False)
-
 ax.set_ylabel(r'$P$ [mm/day]')
+ax.set_title('')
 
 ax.set_ylim(0,5)
 # Add grid
@@ -173,6 +179,7 @@ doys[-1] = doys[-1]+365
 plt.xticks(doys,pd.date_range('2001-01-01','2002-02-01',freq='4MS').strftime('%b'))
 ax.set_xlabel('')
 ax.set_ylabel(r'$P$ [mm/day]')
+ax.set_title('')
 
 ax.set_ylim(0,8)
 # Add grid
@@ -209,22 +216,22 @@ ax.set_title('"Double-peakedness" of CHIRPS rainfall\n(1981-2021)',fontsize=13)
 #{'hoa': {'lat': [-3, 12.5], 'lon': [32, 55]},
 # 'gha': {'lat': [-10, 20], 'lon': [28, 52]},
 if add_geom:
-    geoms = [geometry.box(subset_params['gha']['lon'][0],subset_params['gha']['lat'][0],
-                          subset_params['hoa']['lon'][0],subset_params['gha']['lon'][1]),
-             geometry.box(subset_params['hoa']['lon'][0],subset_params['gha']['lat'][0],
-                          60,subset_params['hoa']['lat'][0]),
-             geometry.box(subset_params['hoa']['lon'][0],subset_params['hoa']['lat'][1],
-                          60,subset_params['gha']['lat'][1]),
-             geometry.box(subset_params['hoa']['lon'][1],subset_params['hoa']['lat'][0],
-                          60,subset_params['hoa']['lon'][1])]
+    geoms = [geometry.box(subset_params_all['gha']['lon'][0],subset_params_all['gha']['lat'][0],
+                          subset_params_all['hoa']['lon'][0],subset_params_all['gha']['lon'][1]),
+             geometry.box(subset_params_all['hoa']['lon'][0],subset_params_all['gha']['lat'][0],
+                          60,subset_params_all['hoa']['lat'][0]),
+             geometry.box(subset_params_all['hoa']['lon'][0],subset_params_all['hoa']['lat'][1],
+                          60,subset_params_all['gha']['lat'][1]),
+             geometry.box(subset_params_all['hoa']['lon'][1],subset_params_all['hoa']['lat'][0],
+                          60,subset_params_all['hoa']['lon'][1])]
     ax.add_geometries(geoms, crs=ccrs.PlateCarree(), facecolor='white',edgecolor='none',alpha=0.5)
     
-    geom = geometry.box(subset_params['hoa']['lon'][0],subset_params['hoa']['lat'][0],
-                        subset_params['hoa']['lon'][1],subset_params['hoa']['lat'][0])
+    geom = geometry.box(subset_params_all['hoa']['lon'][0],subset_params_all['hoa']['lat'][0],
+                        subset_params_all['hoa']['lon'][1],subset_params_all['hoa']['lat'][1])
     ax.add_geometries([geom],crs=ccrs.PlateCarree(),facecolor='none',edgecolor='k')
     
-    ax.text(subset_params['gha']['lon'][1]-0.5,
-            subset_params['hoa']['lat'][0]+0.25,
+    ax.text(subset_params_all['gha']['lon'][1]-0.5,
+            subset_params_all['hoa']['lat'][0]+0.25,
             'Study area',ha='right',va='bottom',color='darkgreen',fontsize=18,
                 transform=ccrs.PlateCarree())
     
