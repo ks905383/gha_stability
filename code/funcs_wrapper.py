@@ -526,7 +526,7 @@ def wrapper_figure7(save_fig=False,output_fn='',
                 color='tab:blue',linestyle='--')
     
     # Adjust accordingly
-    axs[-1][0].set_title('SSTs')
+    axs[-1][0].set_title(r'SSTs [$^\circ C$]')
 
     axs[-1][0].legend([mpl.lines.Line2D([0], [0], color='tab:blue', linestyle='-'),
                     mpl.lines.Line2D([0], [0], color='tab:blue', linestyle='--')],
@@ -683,7 +683,7 @@ def wrapper_figure9(mod_a = 'MERRA2',mod_o = 'OISST',mod_p = 'CHIRPS',
                                                     'cbar_loc':'left'},
                                            'tos':{'type':'all',
                                                       'params':{'vmin':21,'vmax':32,'levels':12,'cmap':cmocean.cm.thermal},
-                                                      'label':r'SST [K]',
+                                                      'label':r'SST [$^\circ C$]',
                                                       'scale':1,
                                                   'cbar_loc':'right'}},
                               seas_label_x = -0.125,
