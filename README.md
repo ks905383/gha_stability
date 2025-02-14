@@ -1,6 +1,6 @@
 # Replication code for Schwarzwald et al., _Large-scale stability and the Greater Horn of Africa long and short rains_
 
-This code replicates the analysis and figures in Schwarzwald et al. (in revision). 
+This code replicates the analysis and figures in Schwarzwald et al. 2023, _JCli_. 
 
 This code is to be used in conjunction with the replication data at doi.org/10.5281/zenodo.8092600. 
 
