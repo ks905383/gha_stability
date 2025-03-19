@@ -23,10 +23,44 @@ def wrapper_seasonal_stats(subset_params,overwrite=False,
     
     1) Get lists of models with precipitation files
     2) Run process_seasonal_stats_dunning() on each of the models
+
+    Parameters
+    ----------------
+    subset_params : dict
+      Requires fields at least (with sample values) for:
+        {'experiment_id':'historical',
+         'time':['1981-01-01','2014-12-31'],
+         'lat':[-3,12.5],
+         'lon':[32,55]}
+        'experiment_id' is used to find relevant files and for filenames, 
+        'time', 'lat', 'lon' are piped into `ds.sel(dim:slice(*vals))`
+
+    override_30dayconvert : bool, by default False
+      If False, then `subset_params` timeslices that end in '31' get changed to 
+      '30' if the last day of month is 30 instead of 31 (implying, sometimes, 
+      a 360-day-calendar). Problematic if input doesn't end on 12-31, but useful
+      if dealing with files tha end in the middle of a year. 
+
+    alt_doy_for_ann : None or str
+      If not None, then put in a string path to a DOY average stat file, to be
+      used as limiting conditions for the year-by-year stats. 
+
+    mod_subset : None or list
+      If not None, then a list of models to process. Otherwise, will process all
+      models, as defined as the names of subdirectories of `dir_list['raw']` with 
+      precipitation data files
+
+    proc_year : bool, by default True
+      If True, then also calculates year-by-year seasonal stats. Otherwise just
+      calculates climatological values. 
+                          
+
+    Returns
+    ----------------
+    Nothing, but calls `process_seasonal_stats_dunning()`, which saves 
+    seasonal stats in dir_list['proc']/[model]/
     
-    override_30dayconvert : does not convert from 360 to 365-day calendar if 
-                            the last day of month is found to be 30 (useful if
-                            file ends in the middle of the year)
+    
     '''
     #--------------------------------------------------------------#
     # Figure out which models have precipitation files, and get 
@@ -73,6 +107,20 @@ def seas_params_dunning(ds,subset_params,dir_list,num_seasons=2,save_temp=True,o
                         diag_mode=False): #diag_mode returns C in addition to ds,bi_idxs
     '''
     Calculate seasonal onsets/demises and associated seasonal statistics on a rainfall climatology
+
+    Parameters
+    --------------
+    ds : xr.Dataset
+      A dataset with a variable 'pr' for precipitation
+
+    subset_params : dict
+      Requires fields at least (with sample values) for:
+        {'experiment_id':'historical',
+         'time':['1981-01-01','2014-12-31'],
+         'lat':[-3,12.5],
+         'lon':[32,55]}
+        'experiment_id' is used to find relevant files and for filenames, 
+        'time', 'lat', 'lon' are piped into `ds.sel(dim:slice(*vals))`
     
     '''
     
