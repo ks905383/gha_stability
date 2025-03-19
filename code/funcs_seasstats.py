@@ -121,6 +121,18 @@ def seas_params_dunning(ds,subset_params,dir_list,num_seasons=2,save_temp=True,o
          'lon':[32,55]}
         'experiment_id' is used to find relevant files and for filenames, 
         'time', 'lat', 'lon' are piped into `ds.sel(dim:slice(*vals))`
+
+    dir_list : dict
+      The output from `get_params()`, to get paths to raw/proc data directories
+
+    num_seasons : int, by default 2 
+      How many seasons to save data for (by default, the n longest identified seasons are kept
+
+    save_temp : bool, by default True
+      Saves seasonal stats instead of just returning them, should only ever be True, presumably
+
+    output_fn : None or str
+      Filename used by `save_temp` above
     
     '''
     
